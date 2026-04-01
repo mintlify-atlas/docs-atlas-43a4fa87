@@ -1,0 +1,163 @@
+---
+title: MultiphaseParameters
+description: Plain data struct that collects all fluid parameters for the two-phase Stokes operator.
+---
+
+`MultiphaseParameters` is a plain data struct in the `multiphase` namespace that bundles every coefficient required by `MultiphaseStaggeredStokesOperator`. You create one instance, fill its fields, and pass it to the operator constructor. The operator then reads the fields directly when assembling the block system shown below.
+
+**Namespace:** `multiphase`  
+**Header:** `multiphase/MultiphaseParameters.h`
+
+---
+
+## Struct definition
+
+```cpp
+namespace multiphase
+{
+struct MultiphaseParameters
+{
+    double rho;
+
+    double eta_n;
+    double eta_s;
+
+    double xi;
+    double nu_n;
+    double nu_s;
+
+    int xi_idx = IBTK::invalid_index;
+
+    bool isVariableDrag() const
+    {
+        return xi_idx != IBTK::invalid_index;
+    }
+};
+} // namespace multiphase
+```
+
+---
+
+## Fields
+
+<ResponseField name="rho" type="double" required>
+  Fluid density. Appears in the unsteady term `C * thn` and `C * ths` on the
+  diagonal blocks of the operator matrix, where `C` absorbs the density scaling
+  set by the time-stepping scheme.
+</ResponseField>
+
+<ResponseField name="eta_n" type="double" required>
+  Dynamic viscosity of the network phase. Controls the magnitude of the
+  viscous stress tensor `A_n`:
+
+  ```
+  A_n = D * eta_n * div(thn * ((grad + grad^T) - div*I))
+  ```
+</ResponseField>
+
+<ResponseField name="eta_s" type="double" required>
+  Dynamic viscosity of the solvent phase. Controls the magnitude of the
+  viscous stress tensor `A_s`:
+
+  ```
+  A_s = D * eta_s * div(ths * ((grad + grad^T) - div*I))
+  ```
+</ResponseField>
+
+<ResponseField name="xi" type="double" required>
+  Constant drag coefficient between the network and solvent phases. Used when
+  `xi_idx` equals `IBTK::invalid_index` (i.e., `isVariableDrag()` returns
+  `false`). Appears in the off-diagonal coupling blocks:
+
+  ```
+  ±D_u * xi / nu_n * thn * ths   (network row)
+  ±D_u * xi / nu_s * thn * ths   (solvent row)
+  ```
+
+  Set via `MultiphaseStaggeredHierarchyIntegrator::setDragCoefficient(xi, nu_n, nu_s)`.
+</ResponseField>
+
+<ResponseField name="nu_n" type="double" required>
+  Drag scaling factor for the network phase. Normalises the drag coupling in
+  the network momentum block. A value of `1.0` gives unscaled drag.
+</ResponseField>
+
+<ResponseField name="nu_s" type="double" required>
+  Drag scaling factor for the solvent phase. Normalises the drag coupling in
+  the solvent momentum block. A value of `1.0` gives unscaled drag.
+</ResponseField>
+
+<ResponseField name="xi_idx" type="int" default="IBTK::invalid_index">
+  Patch data index for a spatially varying drag coefficient. When set to any
+  value other than `IBTK::invalid_index`, the operator reads the drag field
+  from the patch hierarchy at this index instead of using the constant `xi`.
+
+  Set via
+  `MultiphaseStaggeredHierarchyIntegrator::setDragCoefficientFunction(xi_fcn)`,
+  which registers a `CartGridFunction` that fills this patch index each time
+  step.
+</ResponseField>
+
+---
+
+## Method
+
+### isVariableDrag
+
+```cpp
+bool isVariableDrag() const;
+```
+
+Returns `true` when `xi_idx != IBTK::invalid_index`, indicating that the drag
+coefficient is spatially varying and stored on the patch hierarchy. Returns
+`false` when the constant scalar `xi` should be used.
+
+---
+
+## Constant vs variable drag
+
+`MultiphaseStaggeredHierarchyIntegrator` exposes two mutually exclusive ways to
+supply the drag coefficient.
+
+**Constant drag** — call `setDragCoefficient` before initialization:
+
+```cpp
+// xi = 250.0 * eta_s, nu_n = 1.0, nu_s = 1.0
+ins_integrator->setDragCoefficient(250.0 * eta_s, 1.0, 1.0);
+```
+
+This writes directly into `MultiphaseParameters::xi`, `nu_n`, and `nu_s`.
+`xi_idx` stays at `IBTK::invalid_index` and `isVariableDrag()` returns `false`.
+
+**Variable drag** — call `setDragCoefficientFunction` before initialization:
+
+```cpp
+Pointer<CartGridFunction> xi_fcn = /* your spatially varying function */;
+ins_integrator->setDragCoefficientFunction(xi_fcn);
+```
+
+This allocates a patch data index, stores it in `MultiphaseParameters::xi_idx`,
+and fills the field via `xi_fcn` each time step. `isVariableDrag()` returns
+`true` and the operator reads the drag from the patch hierarchy.
+
+---
+
+## Operator matrix mapping
+
+`MultiphaseStaggeredStokesOperator` assembles the following block system using
+the fields from `MultiphaseParameters`:
+
+```
+[ C*thn + A_n + D_u*(xi/nu_n)*thn*ths   -D_u*(xi/nu_n)*thn*ths                D_p*thn*grad ] [ un ]
+[ -D_u*(xi/nu_s)*thn*ths                C*ths + A_s + D_u*(xi/nu_s)*thn*ths   D_p*ths*grad ] [ us ]
+[ D_div*div(thn)                         D_div*div(ths)                         0            ] [ p  ]
+```
+
+where:
+
+- `A_i = D * eta_i * div(thn_i * ((grad + grad^T) - div*I))` uses `eta_n` or `eta_s`
+- The drag coupling blocks use `xi` (constant) or the patch field at `xi_idx` (variable), scaled by `nu_n` and `nu_s`
+- `C`, `D_u`, `D_p`, `D_div` are time-stepping coefficients set separately via `setCandDCoefficients`
+
+The `rho` field enters `C` through the time-stepping scheme in
+`MultiphaseStaggeredHierarchyIntegrator`.

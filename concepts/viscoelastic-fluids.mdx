@@ -1,0 +1,122 @@
+---
+title: "Viscoelastic fluids"
+description: "The Oldroyd-B conformation tensor model for non-Newtonian network phases, including how to enable and configure it."
+---
+
+The solver supports non-Newtonian viscoelastic behavior through an **Oldroyd-B conformation tensor model**. When enabled, the network phase carries a polymer stress described by a symmetric positive-definite conformation tensor $\mathbf{C}$, which evolves in time and contributes an additional stress to the network momentum equation.
+
+## When to use the viscoelastic model
+
+The Newtonian model (default) treats both phases as purely viscous fluids. This is appropriate when the network phase behaves like a viscous gel with no elastic memory.
+
+Use the viscoelastic model when:
+
+- The network phase is a polymer solution or hydrogel that stores elastic energy.
+- You need to capture stress relaxation or normal stress differences.
+- The Weissenberg number (ratio of relaxation time to flow time scale) is non-negligible.
+
+Enable the model by setting `USE_CF = TRUE` in your input file:
+
+```text input2d
+USE_CF = TRUE
+```
+
+<Note>
+The default in `frm/input2d` is `USE_CF = FALSE`. The Newtonian solver runs without the conformation tensor, which reduces memory usage and removes the need to solve the tensor evolution equation.
+</Note>
+
+## The Oldroyd-B model
+
+The Oldroyd-B model describes a dilute polymer solution in which polymer chains are modeled as linear elastic dumbbells. The macroscopic state of the polymer is encoded in the **conformation tensor** $\mathbf{C}$, a symmetric positive-definite field that represents the average end-to-end stretch and orientation of the polymer chains.
+
+In the Oldroyd-B model, $\mathbf{C}$ satisfies the upper-convected Maxwell equation:
+
+$$
+\frac{\partial \mathbf{C}}{\partial t} + (\mathbf{u}_n \cdot \nabla)\mathbf{C} - \mathbf{C}(\nabla\mathbf{u}_n)^T - (\nabla\mathbf{u}_n)\mathbf{C} = -\frac{1}{\lambda}(\mathbf{C} - \mathbf{I})
+$$
+
+where $\lambda$ is the **relaxation time**. The right-hand side drives $\mathbf{C}$ back toward the identity (the equilibrium, unstretched state) on a time scale $\lambda$.
+
+The polymer contribution to the network stress is:
+
+$$
+\boldsymbol{\sigma}_p = \frac{\eta_p}{\lambda}(\mathbf{C} - \mathbf{I})
+$$
+
+where $\eta_p$ is the polymer viscosity. This stress is added to the network phase momentum equation.
+
+## CFMultiphaseOldroydB strategy
+
+The viscoelastic behavior is implemented in the `CFMultiphaseOldroydB` class, which extends the `CFStrategy` interface from IBAMR. It provides two key methods:
+
+### `computeRelaxation`
+
+```cpp
+void computeRelaxation(int R_idx,
+                       Pointer<CellVariable<NDIM, double>> R_var,
+                       int C_idx,
+                       Pointer<CellVariable<NDIM, double>> C_var,
+                       TensorEvolutionType evolve_type,
+                       Pointer<PatchHierarchy<NDIM>> hierarchy,
+                       double data_time);
+```
+
+This method computes the relaxation source term $\mathbf{R} = -\frac{1}{\lambda}(\mathbf{C} - \mathbf{I})$ on the patch hierarchy. It is called by the advection-diffusion integrator to evaluate the right-hand side of the conformation tensor evolution equation. The volume fraction $\theta_n$ is used to weight the relaxation consistently with the two-phase formulation.
+
+### `computeStress`
+
+```cpp
+void computeStress(int sig_idx,
+                   Pointer<CellVariable<NDIM, double>> sig_var,
+                   Pointer<PatchHierarchy<NDIM>> hierarchy,
+                   double data_time);
+```
+
+This method evaluates the polymer stress $\boldsymbol{\sigma}_p = \frac{\eta_p}{\lambda}(\mathbf{C} - \mathbf{I})$ from the current conformation tensor field and writes it to the output patch data index. The stress is then incorporated into the network phase body force in the momentum equations.
+
+<Info>
+Both methods operate on `CellVariable` data and traverse the full AMR patch hierarchy, so the conformation tensor and stress fields respect the same refinement structure as the velocity and volume fraction fields.
+</Info>
+
+## Enabling and configuring the model
+
+### Step 1: Set USE_CF = TRUE
+
+In your input file, set the flag at the top level:
+
+```text input2d
+USE_CF = TRUE
+```
+
+### Step 2: Add a CFFluid section
+
+Configure the relaxation time and polymer viscosity in a `CFFluid` input database block. The constructor of `CFMultiphaseOldroydB` reads this database:
+
+```text input2d
+CFFluid {
+   relaxation_time = 0.1     // polymer relaxation time lambda
+   viscosity       = 0.01    // polymer viscosity eta_p
+}
+```
+
+### Step 3: Register the strategy with the integrator
+
+In your C++ driver code, construct a `CFMultiphaseOldroydB` object and register it with the conformation tensor advection-diffusion integrator before calling `initializePatchHierarchy`:
+
+```cpp
+auto cf_strategy = new multiphase::CFMultiphaseOldroydB(
+    "CFMultiphaseOldroydB",
+    thn_var,
+    thn_integrator,
+    input_db->getDatabase("CFFluid"));
+
+cf_integrator->registerCFStrategy(cf_strategy);
+```
+
+<Tip>
+Start with a small relaxation time (low Weissenberg number) to verify that your setup is correct before increasing elasticity. Very large relaxation times can require smaller time steps to maintain stability of the conformation tensor evolution.
+</Tip>
+
+## Relationship to the Newtonian model
+
+When `USE_CF = FALSE`, the solver reduces to the purely viscous two-fluid model described in [Multiphase model](/concepts/multiphase-model). The network phase viscosity `eta_n` accounts for all network stress. When `USE_CF = TRUE`, `eta_n` represents only the solvent contribution to network stress, and the polymer stress $\boldsymbol{\sigma}_p$ adds the elastic contribution on top of it.

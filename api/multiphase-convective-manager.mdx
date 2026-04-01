@@ -1,0 +1,320 @@
+---
+title: 'MultiphaseConvectiveManager'
+description: 'Encapsulates the momentum convective operator approximation for the two-fluid multiphase equations.'
+---
+
+## Overview
+
+`MultiphaseConvectiveManager` manages all routines required to approximate the momentum convective operator for the multiphase equations. It performs flux-differencing of the phase-weighted momenta using a limited upwind scheme on the staggered MAC grid.
+
+**Namespace:** `multiphase`
+
+**Header:** `multiphase/MultiphaseConvectiveManager.h`
+
+The class lazily allocates patch data on first use and does not maintain state across a regridding operation.
+
+<Warning>
+  This class must be destroyed or have `deallocateData` called **before** any regridding operation. Because it does not maintain state across regridds, it cannot be used in isolation with multistep (e.g. Adams–Bashforth) algorithms.
+</Warning>
+
+## Available limiters
+
+The following `IBAMR::LimiterType` values are supported:
+
+| Limiter | Description |
+|---------|-------------|
+| `UPWIND` | First-order upwind (default) |
+| `CUI` | Cubic upwind interpolation |
+| `FBICS` | Flux-based interpolation cubic scheme |
+| `MGAMMA` | Monotone gamma scheme |
+
+## Constructors
+
+### Database-based constructor
+
+```cpp
+MultiphaseConvectiveManager(
+    std::string object_name,
+    SAMRAI::tbox::Pointer<SAMRAI::hier::PatchHierarchy<NDIM>> hierarchy,
+    SAMRAI::tbox::Pointer<SAMRAI::tbox::Database> input_db,
+    const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>& un_bc_coefs = {},
+    const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>& us_bc_coefs = {},
+    SAMRAI::solv::RobinBcCoefStrategy<NDIM>* thn_bc_coef = nullptr);
+```
+
+Constructs the manager by reading the limiter type from the input database. The database must contain the key `"limiter_type"` with one of the supported limiter strings: `"UPWIND"`, `"CUI"`, `"FBICS"`, or `"MGAMMA"`.
+
+<ParamField path="object_name" type="string" required>
+  Unique name for this object, used for variable registration and logging.
+</ParamField>
+
+<ParamField path="hierarchy" type="SAMRAI::tbox::Pointer<SAMRAI::hier::PatchHierarchy<NDIM>>" required>
+  The AMR patch hierarchy on which convective terms are computed.
+</ParamField>
+
+<ParamField path="input_db" type="SAMRAI::tbox::Pointer<SAMRAI::tbox::Database>" required>
+  Input database. Must contain `"limiter_type"` specifying one of the supported limiter strings.
+</ParamField>
+
+<ParamField path="un_bc_coefs" type="const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>&" default="{}">
+  Robin BC coefficients for the network velocity, one per spatial dimension.
+</ParamField>
+
+<ParamField path="us_bc_coefs" type="const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>&" default="{}">
+  Robin BC coefficients for the solvent velocity, one per spatial dimension.
+</ParamField>
+
+<ParamField path="thn_bc_coef" type="SAMRAI::solv::RobinBcCoefStrategy<NDIM>*" default="nullptr">
+  Robin BC coefficient for the volume fraction. Pass `nullptr` to use linear extrapolation at physical boundaries.
+</ParamField>
+
+---
+
+### LimiterType-based constructor
+
+```cpp
+MultiphaseConvectiveManager(
+    std::string object_name,
+    SAMRAI::tbox::Pointer<SAMRAI::hier::PatchHierarchy<NDIM>> hierarchy,
+    IBAMR::LimiterType limiter_type,
+    const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>& un_bc_coefs = {},
+    const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>& us_bc_coefs = {},
+    SAMRAI::solv::RobinBcCoefStrategy<NDIM>* thn_bc_coef = nullptr);
+```
+
+Constructs the manager with an explicitly provided `LimiterType` value.
+
+<ParamField path="object_name" type="string" required>
+  Unique name for this object.
+</ParamField>
+
+<ParamField path="hierarchy" type="SAMRAI::tbox::Pointer<SAMRAI::hier::PatchHierarchy<NDIM>>" required>
+  The AMR patch hierarchy on which convective terms are computed.
+</ParamField>
+
+<ParamField path="limiter_type" type="IBAMR::LimiterType" required>
+  Limiter to use for momentum interpolation. One of `UPWIND`, `CUI`, `FBICS`, or `MGAMMA`.
+</ParamField>
+
+<ParamField path="un_bc_coefs" type="const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>&" default="{}">
+  Robin BC coefficients for the network velocity, one per spatial dimension.
+</ParamField>
+
+<ParamField path="us_bc_coefs" type="const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>&" default="{}">
+  Robin BC coefficients for the solvent velocity, one per spatial dimension.
+</ParamField>
+
+<ParamField path="thn_bc_coef" type="SAMRAI::solv::RobinBcCoefStrategy<NDIM>*" default="nullptr">
+  Robin BC coefficient for the volume fraction.
+</ParamField>
+
+## Methods
+
+### `approximateConvectiveOperator` (with copy)
+
+```cpp
+void approximateConvectiveOperator(
+    int dst_un_idx,
+    int dst_us_idx,
+    IBAMR::TimeSteppingType ts_type,
+    double current_time,
+    double new_time,
+    int un_cur_idx,
+    int us_cur_idx,
+    int thn_cur_idx,
+    int un_new_idx,
+    int us_new_idx,
+    int thn_new_idx);
+```
+
+Computes the convective operator approximation and copies results into `dst_un_idx` and `dst_us_idx`. Either destination index may be an invalid index, in which case that copy is skipped.
+
+For `ts_type = FORWARD_EULER`, the new-time indices (`un_new_idx`, `us_new_idx`, `thn_new_idx`) are not used and may be invalid.
+
+<ParamField path="dst_un_idx" type="int" required>
+  Patch data index to receive the network-phase convective operator result. Pass an invalid index to skip.
+</ParamField>
+
+<ParamField path="dst_us_idx" type="int" required>
+  Patch data index to receive the solvent-phase convective operator result. Pass an invalid index to skip.
+</ParamField>
+
+<ParamField path="ts_type" type="IBAMR::TimeSteppingType" required>
+  Time-stepping scheme: `FORWARD_EULER`, `MIDPOINT_RULE`, or `TRAPEZOIDAL_RULE`.
+</ParamField>
+
+<ParamField path="current_time" type="double" required>
+  Current simulation time t^n.
+</ParamField>
+
+<ParamField path="new_time" type="double" required>
+  New simulation time t^{n+1}.
+</ParamField>
+
+<ParamField path="un_cur_idx" type="int" required>
+  Patch index for the network velocity at time t^n.
+</ParamField>
+
+<ParamField path="us_cur_idx" type="int" required>
+  Patch index for the solvent velocity at time t^n.
+</ParamField>
+
+<ParamField path="thn_cur_idx" type="int" required>
+  Patch index for the volume fraction at time t^n.
+</ParamField>
+
+<ParamField path="un_new_idx" type="int" required>
+  Patch index for the network velocity at time t^{n+1}. May be invalid for `FORWARD_EULER`.
+</ParamField>
+
+<ParamField path="us_new_idx" type="int" required>
+  Patch index for the solvent velocity at time t^{n+1}. May be invalid for `FORWARD_EULER`.
+</ParamField>
+
+<ParamField path="thn_new_idx" type="int" required>
+  Patch index for the volume fraction at time t^{n+1}. May be invalid for `FORWARD_EULER`.
+</ParamField>
+
+---
+
+### `approximateConvectiveOperator` (without copy)
+
+```cpp
+void approximateConvectiveOperator(
+    IBAMR::TimeSteppingType ts_type,
+    double current_time,
+    double new_time,
+    int un_cur_idx,
+    int us_cur_idx,
+    int thn_cur_idx,
+    int un_new_idx,
+    int us_new_idx,
+    int thn_new_idx);
+```
+
+Identical to the copy variant but does not transfer results to any external indices. Retrieve the result afterwards using `fillWithConvectiveOperator` or `getConvectiveIndices`.
+
+<ParamField path="ts_type" type="IBAMR::TimeSteppingType" required>
+  Time-stepping scheme: `FORWARD_EULER`, `MIDPOINT_RULE`, or `TRAPEZOIDAL_RULE`.
+</ParamField>
+
+<ParamField path="current_time" type="double" required>
+  Current simulation time t^n.
+</ParamField>
+
+<ParamField path="new_time" type="double" required>
+  New simulation time t^{n+1}.
+</ParamField>
+
+<ParamField path="un_cur_idx" type="int" required>
+  Patch index for the network velocity at t^n.
+</ParamField>
+
+<ParamField path="us_cur_idx" type="int" required>
+  Patch index for the solvent velocity at t^n.
+</ParamField>
+
+<ParamField path="thn_cur_idx" type="int" required>
+  Patch index for the volume fraction at t^n.
+</ParamField>
+
+<ParamField path="un_new_idx" type="int" required>
+  Patch index for the network velocity at t^{n+1}. May be invalid for `FORWARD_EULER`.
+</ParamField>
+
+<ParamField path="us_new_idx" type="int" required>
+  Patch index for the solvent velocity at t^{n+1}. May be invalid for `FORWARD_EULER`.
+</ParamField>
+
+<ParamField path="thn_new_idx" type="int" required>
+  Patch index for the volume fraction at t^{n+1}. May be invalid for `FORWARD_EULER`.
+</ParamField>
+
+---
+
+### `fillWithConvectiveOperator`
+
+```cpp
+void fillWithConvectiveOperator(int dst_un_idx, int dst_us_idx);
+```
+
+Copies the most recent convective operator approximation into the provided patch indices. If either index is invalid, that copy is skipped.
+
+<ParamField path="dst_un_idx" type="int" required>
+  Destination patch index for the network-phase result.
+</ParamField>
+
+<ParamField path="dst_us_idx" type="int" required>
+  Destination patch index for the solvent-phase result.
+</ParamField>
+
+---
+
+### `getConvectiveIndices`
+
+```cpp
+std::pair<int, int> getConvectiveIndices() const;
+```
+
+Returns the internal patch data index pair holding the most recent convective operator approximation. The first element of the pair is the network-phase index; the second is the solvent-phase index.
+
+---
+
+### `deallocateData`
+
+```cpp
+void deallocateData();
+```
+
+Deallocates all patch data associated with this object. You must call this (or destroy the object) before any regridding operation.
+
+---
+
+### `resetData`
+
+```cpp
+void resetData();
+```
+
+Resets the manager to a blank state without deallocating patch memory. Useful for clearing operator state between time steps when the hierarchy has not changed.
+
+---
+
+### `setBoundaryConditions`
+
+```cpp
+void setBoundaryConditions(
+    const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>& un_bc_coefs,
+    const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>& us_bc_coefs,
+    SAMRAI::solv::RobinBcCoefStrategy<NDIM>* thn_bc_coef);
+```
+
+Updates the boundary condition objects at any point after construction. This class does not take ownership of any of these objects.
+
+<ParamField path="un_bc_coefs" type="const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>&" required>
+  Robin BC coefficients for the network velocity.
+</ParamField>
+
+<ParamField path="us_bc_coefs" type="const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>&" required>
+  Robin BC coefficients for the solvent velocity.
+</ParamField>
+
+<ParamField path="thn_bc_coef" type="SAMRAI::solv::RobinBcCoefStrategy<NDIM>*" required>
+  Robin BC coefficient for the volume fraction. May be `nullptr`.
+</ParamField>
+
+## Regridding note
+
+`MultiphaseConvectiveManager` does not rebuild its internal state after a regridding event. Before calling any regrid routine, either destroy the object or call `deallocateData`. After regridding, reconstruct or reinitialise the manager with the updated hierarchy.
+
+```cpp
+// Before regrid
+convective_manager->deallocateData();
+
+// ... perform regrid ...
+
+// After regrid: re-create or reset the manager
+convective_manager = std::make_unique<MultiphaseConvectiveManager>(
+    "ConvectiveManager", new_hierarchy, IBAMR::LimiterType::CUI,
+    un_bc_coefs, us_bc_coefs, thn_bc_coef);
+```

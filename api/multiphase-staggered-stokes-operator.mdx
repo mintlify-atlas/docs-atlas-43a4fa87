@@ -1,0 +1,214 @@
+---
+title: 'MultiphaseStaggeredStokesOperator'
+description: 'Linear operator that applies the coupled two-fluid staggered Stokes system on an AMR hierarchy.'
+---
+
+## Overview
+
+`MultiphaseStaggeredStokesOperator` is a concrete `IBTK::LinearOperator` implementing a staggered-grid (MAC) discretisation of the two-fluid incompressible Stokes operator. It is designed for use inside an iterative Krylov or Newton–Krylov solver.
+
+**Namespace:** `multiphase`
+
+**Header:** `multiphase/MultiphaseStaggeredStokesOperator.h`
+
+## Operator matrix
+
+The operator applies the following block system to the vector `[u_n, u_s, p]^T`:
+
+```
+[ C*thn + A_n + D_u*xi/nu_n*thn*ths   -D_u*xi/nu_n*thn*ths                D_p*thn*grad ] [ u_n ]
+[ -D_u*xi/nu_s*thn*ths                C*ths + A_s + D_u*xi/nu_s*thn*ths   D_p*ths*grad ] [ u_s ]
+[ D_div*div(thn)                       D_div*div(ths)                       0            ] [ p   ]
+```
+
+where the viscous stress blocks are:
+
+```
+A_i = D_u * eta_i * div(thn * ((grad + grad^T) - div*I))
+```
+
+The scalars `C`, `D_u`, `D_p`, and `D_div` are set by the time-stepping scheme via `setCandDCoefficients`. Default values of `D_p = -1.0` and `D_div = 1.0` are appropriate for a standard linear system solve. The variable drag coefficient case is also handled by this class.
+
+## Constructor
+
+```cpp
+MultiphaseStaggeredStokesOperator(
+    const std::string& object_name,
+    bool homogeneous_bc,
+    const MultiphaseParameters& params);
+```
+
+<ParamField path="object_name" type="string" required>
+  Unique name for this operator, used in logging.
+</ParamField>
+
+<ParamField path="homogeneous_bc" type="bool" required>
+  When `true`, homogeneous (zero) boundary conditions are enforced. Typically `true` when the operator is used as a preconditioner component, `false` for the full system solve.
+</ParamField>
+
+<ParamField path="params" type="const MultiphaseParameters&" required>
+  Physical parameters struct containing viscosity coefficients (`eta_n`, `eta_s`) and drag parameters (`xi`, `nu_n`, `nu_s`).
+</ParamField>
+
+## Configuration methods
+
+### `setCandDCoefficients`
+
+```cpp
+void setCandDCoefficients(double C, double D_u, double D_p = -1.0, double D_div = 1.0);
+```
+
+Sets the scaling coefficients for the operator blocks. These are typically determined by the time-stepping scheme (e.g., `C = 1/dt`, `D_u = 0.5` for Crank–Nicolson).
+
+<ParamField path="C" type="double" required>
+  Coefficient multiplying the mass-like diagonal block.
+</ParamField>
+
+<ParamField path="D_u" type="double" required>
+  Coefficient scaling the viscous and drag terms in the momentum equations.
+</ParamField>
+
+<ParamField path="D_p" type="double" default="-1.0">
+  Coefficient scaling the pressure gradient terms. Negative by convention for a saddle-point system.
+</ParamField>
+
+<ParamField path="D_div" type="double" default="1.0">
+  Coefficient scaling the divergence constraint row.
+</ParamField>
+
+---
+
+### `setThnIdx`
+
+```cpp
+void setThnIdx(int thn_idx);
+```
+
+Provides the cell-centred patch data index for the network volume fraction **θ_n**. This must be set before calling `apply`.
+
+<ParamField path="thn_idx" type="int" required>
+  SAMRAI variable–context index for the cell-centred volume fraction field.
+</ParamField>
+
+---
+
+### `setPhysicalBcCoefs`
+
+```cpp
+virtual void setPhysicalBcCoefs(
+    const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>& un_bc_coefs,
+    const std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>& us_bc_coefs,
+    SAMRAI::solv::RobinBcCoefStrategy<NDIM>* P_bc_coef,
+    SAMRAI::solv::RobinBcCoefStrategy<NDIM>* thn_bc_coef);
+```
+
+Registers the physical boundary condition objects for all solution components. Any pointer may be `nullptr`, in which case homogeneous Dirichlet (velocities) or homogeneous Neumann (pressure) conditions are applied.
+
+<ParamField path="un_bc_coefs" type="std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>" required>
+  Robin BC coefficients for the network velocity, one entry per spatial dimension.
+</ParamField>
+
+<ParamField path="us_bc_coefs" type="std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>" required>
+  Robin BC coefficients for the solvent velocity, one entry per spatial dimension.
+</ParamField>
+
+<ParamField path="P_bc_coef" type="SAMRAI::solv::RobinBcCoefStrategy<NDIM>*" required>
+  Robin BC coefficient for the pressure. Pass `nullptr` for homogeneous Neumann conditions.
+</ParamField>
+
+<ParamField path="thn_bc_coef" type="SAMRAI::solv::RobinBcCoefStrategy<NDIM>*" required>
+  Robin BC coefficient for the volume fraction. Pass `nullptr` for linear extrapolation.
+</ParamField>
+
+---
+
+### `setPhysicalBoundaryHelper`
+
+```cpp
+virtual void setPhysicalBoundaryHelper(
+    SAMRAI::tbox::Pointer<IBAMR::StaggeredStokesPhysicalBoundaryHelper> bc_helper);
+```
+
+Sets the physical boundary condition helper object used during the operator application to enforce velocity boundary values on the staggered grid.
+
+<ParamField path="bc_helper" type="SAMRAI::tbox::Pointer<IBAMR::StaggeredStokesPhysicalBoundaryHelper>" required>
+  Boundary helper that handles staggered-grid velocity BC enforcement.
+</ParamField>
+
+## Operator application
+
+### `apply`
+
+```cpp
+void apply(
+    SAMRAI::solv::SAMRAIVectorReal<NDIM, double>& x,
+    SAMRAI::solv::SAMRAIVectorReal<NDIM, double>& y) override;
+```
+
+Computes `y = A*x`. Both vectors must have the same hierarchy and compatible variable structure. The input vector `x` must have sufficient ghost cells for the stencil computation. You must call `initializeOperatorState` before calling `apply`.
+
+<ParamField path="x" type="SAMRAI::solv::SAMRAIVectorReal<NDIM, double>&" required>
+  Input vector `[u_n, u_s, p]^T`. Must have ghost cells filled.
+</ParamField>
+
+<ParamField path="y" type="SAMRAI::solv::SAMRAIVectorReal<NDIM, double>&" required>
+  Output vector. Receives the result `A*x` on return.
+</ParamField>
+
+---
+
+### `initializeOperatorState`
+
+```cpp
+void initializeOperatorState(
+    const SAMRAI::solv::SAMRAIVectorReal<NDIM, double>& in,
+    const SAMRAI::solv::SAMRAIVectorReal<NDIM, double>& out) override;
+```
+
+Computes and caches all hierarchy-dependent data (communication schedules, scratch allocations) needed for `apply`. Safe to call when state is already initialised; the existing state is deallocated and reinitialised. Call `deallocateOperatorState` to free the allocated data.
+
+<ParamField path="in" type="const SAMRAI::solv::SAMRAIVectorReal<NDIM, double>&" required>
+  Representative input vector defining the hierarchy and variable structure.
+</ParamField>
+
+<ParamField path="out" type="const SAMRAI::solv::SAMRAIVectorReal<NDIM, double>&" required>
+  Representative output vector. Must match `in` in hierarchy and structure.
+</ParamField>
+
+---
+
+### `deallocateOperatorState`
+
+```cpp
+void deallocateOperatorState() override;
+```
+
+Releases all hierarchy-dependent data allocated by `initializeOperatorState`. Safe to call when already deallocated. Call this before destroying the operator or after the hierarchy changes.
+
+---
+
+### `modifyRhsForBcs`
+
+```cpp
+void modifyRhsForBcs(SAMRAI::solv::SAMRAIVectorReal<NDIM, double>& y) override;
+```
+
+Modifies the right-hand-side vector to incorporate non-homogeneous physical boundary conditions, moving the BC contribution from the solution side to the RHS.
+
+<ParamField path="y" type="SAMRAI::solv::SAMRAIVectorReal<NDIM, double>&" required>
+  Right-hand-side vector to be modified in place.
+</ParamField>
+
+---
+
+### `imposeSolBcs`
+
+```cpp
+void imposeSolBcs(SAMRAI::solv::SAMRAIVectorReal<NDIM, double>& u) override;
+```
+
+Directly enforces physical boundary conditions on the solution vector.
+
+<ParamField path="u" type="SAMRAI::solv::SAMRAIVectorReal<NDIM, double>&" required>
+  Solution vector on which boundary conditions are imposed in place.
+</ParamField>

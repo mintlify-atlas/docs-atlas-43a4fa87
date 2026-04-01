@@ -1,0 +1,222 @@
+---
+title: CFMultiphaseOldroydB
+description: Oldroyd-B viscoelastic constitutive model for two-phase flows on AMR patch hierarchies.
+---
+
+`CFMultiphaseOldroydB` implements the Oldroyd-B viscoelastic model for multiphase flows. It extends `IBAMR::CFStrategy` and supplies the relaxation and stress computation routines consumed by `CFINSForcing`. The class couples the conformation tensor evolution to the network volume fraction `thn`, scaling both the relaxation source term and the resulting polymer stress by the local network phase concentration.
+
+**Namespace:** `multiphase`  
+**Header:** `multiphase/CFMultiphaseOldroydB.h`
+
+---
+
+## Constructor
+
+```cpp
+CFMultiphaseOldroydB(
+    std::string object_name,
+    SAMRAI::tbox::Pointer<SAMRAI::pdat::CellVariable<NDIM, double>> thn_var,
+    SAMRAI::tbox::Pointer<IBAMR::AdvDiffHierarchyIntegrator>        thn_integrator,
+    SAMRAI::tbox::Pointer<SAMRAI::tbox::Database>                   input_db);
+```
+
+<ParamField path="object_name" type="string" required>
+  Name passed to the base `CFStrategy` for logging and object registry lookup.
+</ParamField>
+
+<ParamField path="thn_var" type="CellVariable<NDIM, double>" required>
+  Cell-centered variable holding the network volume fraction `thn`. Used to
+  scale the polymer stress in `computeStress`.
+</ParamField>
+
+<ParamField path="thn_integrator" type="AdvDiffHierarchyIntegrator" required>
+  Advection-diffusion integrator that owns `thn_var`. The constructor uses its
+  current, scratch, and new contexts to interpolate `thn` in time.
+</ParamField>
+
+<ParamField path="input_db" type="Database" required>
+  SAMRAI input database. The constructor reads two keys from this database:
+
+  <ParamField path="relaxation_time" type="double" required>
+    Polymer relaxation time λ (seconds). Determines how quickly the conformation
+    tensor relaxes back to the identity: `R = (I - C) / λ`.
+  </ParamField>
+
+  <ParamField path="viscosity" type="double" required>
+    Polymer viscosity η_p. Together with `relaxation_time`, sets the magnitude of
+    the polymer stress: `σ = thn * η_p / λ * (C - I)`.
+  </ParamField>
+</ParamField>
+
+---
+
+## Methods
+
+### computeRelaxation
+
+```cpp
+void computeRelaxation(
+    int R_idx,
+    SAMRAI::tbox::Pointer<SAMRAI::pdat::CellVariable<NDIM, double>> R_var,
+    int C_idx,
+    SAMRAI::tbox::Pointer<SAMRAI::pdat::CellVariable<NDIM, double>> C_var,
+    IBAMR::TensorEvolutionType evolve_type,
+    SAMRAI::tbox::Pointer<SAMRAI::hier::PatchHierarchy<NDIM>>       hierarchy,
+    double data_time) override;
+```
+
+Fills the relaxation source term `R` on every patch in the hierarchy. For
+the Oldroyd-B model the relaxation term is:
+
+```
+R_ij = (δ_ij - C_ij) / λ
+```
+
+where `C` is the conformation tensor (converted from the evolved quantity via
+`convert_to_conformation_tensor` to handle non-standard evolution types such as
+log-conformation).
+
+<ParamField path="R_idx" type="int" required>
+  Patch data index for the output relaxation field. Depth must be at least 3
+  (components 0, 1, 2 correspond to `C_xx`, `C_yy`, `C_xy` in 2D).
+</ParamField>
+
+<ParamField path="R_var" type="CellVariable<NDIM, double>" required>
+  Variable associated with `R_idx`.
+</ParamField>
+
+<ParamField path="C_idx" type="int" required>
+  Patch data index for the current conformation (or evolved) tensor.
+</ParamField>
+
+<ParamField path="C_var" type="CellVariable<NDIM, double>" required>
+  Variable associated with `C_idx`.
+</ParamField>
+
+<ParamField path="evolve_type" type="TensorEvolutionType" required>
+  Specifies how the conformation tensor is stored (e.g., `STANDARD`,
+  `SQUARE_ROOT`, `LOGARITHM`). The conversion to the physical conformation
+  tensor is handled internally before computing the relaxation.
+</ParamField>
+
+<ParamField path="hierarchy" type="PatchHierarchy<NDIM>" required>
+  AMR patch hierarchy over which the relaxation is computed, from level 0 to
+  the finest level.
+</ParamField>
+
+<ParamField path="data_time" type="double" required>
+  Current simulation time. Passed through to any time-dependent operations.
+</ParamField>
+
+---
+
+### computeStress
+
+```cpp
+void computeStress(
+    int sig_idx,
+    SAMRAI::tbox::Pointer<SAMRAI::pdat::CellVariable<NDIM, double>> sig_var,
+    SAMRAI::tbox::Pointer<SAMRAI::hier::PatchHierarchy<NDIM>>       hierarchy,
+    double data_time) override;
+```
+
+Converts the conformation tensor stored at `sig_idx` into the Cauchy polymer
+stress tensor **in place**. The stress relation is:
+
+```
+σ_ij = thn * (η_p / λ) * (C_ij - δ_ij)
+```
+
+`thn` is time-interpolated as the average of the current and new contexts when
+the new context is allocated; otherwise it copies from the current context.
+Ghost cells of `thn` are filled with conservative linear refinement and linear
+time interpolation before the stress is evaluated.
+
+<ParamField path="sig_idx" type="int" required>
+  Patch data index that holds the conformation tensor on entry. The array is
+  overwritten with the polymer stress on exit.
+</ParamField>
+
+<ParamField path="sig_var" type="CellVariable<NDIM, double>" required>
+  Variable associated with `sig_idx`.
+</ParamField>
+
+<ParamField path="hierarchy" type="PatchHierarchy<NDIM>" required>
+  AMR patch hierarchy. The stress conversion is applied from level 0 to the
+  finest level, including ghost cells needed by the divergence stencil.
+</ParamField>
+
+<ParamField path="data_time" type="double" required>
+  Current simulation time used to fill `thn` ghost cells and interpolate
+  between time contexts.
+</ParamField>
+
+---
+
+## Enabling viscoelasticity in a simulation
+
+Set `USE_CF = TRUE` in your input file and configure `CFINSForcing` with
+`fluid_model = "OLDROYDB"`. The relaxation and viscosity parameters live in the
+`CFINSForcing` database block, which is passed directly to the
+`CFMultiphaseOldroydB` constructor.
+
+```text input2d
+// Complex fluid flags
+USE_CF    = TRUE
+FLUID_MODEL = "OLDROYDB"
+EVOLVE_TYPE = "STANDARD"
+
+RELAXATION_TIME = 0.3
+VISCOSITY       = 2.0
+
+CFINSForcing {
+    relaxation_time            = RELAXATION_TIME
+    viscosity                  = VISCOSITY
+    fluid_model                = FLUID_MODEL
+    evolution_type             = EVOLVE_TYPE
+    log_determinant            = TRUE
+    convective_operator_type   = "CUI"
+    output_stress_tensor       = FALSE
+    output_conformation_tensor = TRUE
+    output_divergence          = TRUE
+    interp_type                = "LINEAR"
+    project_conformation_tensor = FALSE
+    InitialConditions {
+        function_0 = "1.0"
+        function_1 = "1.0"
+        function_2 = "0.0"
+    }
+}
+```
+
+## Usage example
+
+The following excerpt from `frm/four_roll_mill.cpp` shows how to construct
+`CFMultiphaseOldroydB` and register it with `CFINSForcing`:
+
+```cpp four_roll_mill.cpp
+bool use_cf = input_db->getBool("USE_CF");
+Pointer<CFINSForcing> cf_un_forcing;
+Pointer<CFStrategy>   cf_strategy;
+
+if (use_cf)
+{
+    Pointer<INSHierarchyIntegrator> ins_cf_integrator = ins_integrator;
+    cf_un_forcing = new CFINSForcing("CFINSForcing",
+                                     app_initializer->getComponentDatabase("CFINSForcing"),
+                                     ins_cf_integrator,
+                                     grid_geometry,
+                                     adv_diff_integrator,
+                                     visit_data_writer);
+    cf_strategy = new CFMultiphaseOldroydB("CFOldroydB",
+                                           ins_integrator->getNetworkVolumeFractionVariable(),
+                                           adv_diff_integrator,
+                                           input_db->getDatabase("CFINSForcing"));
+    cf_un_forcing->registerCFStrategy(cf_strategy);
+    ins_integrator->setForcingFunctions(cf_un_forcing, nullptr);
+}
+```
+
+The `CFINSForcing` database block is shared between the `CFINSForcing` object
+and `CFMultiphaseOldroydB` so that `relaxation_time` and `viscosity` are read
+from the same source.

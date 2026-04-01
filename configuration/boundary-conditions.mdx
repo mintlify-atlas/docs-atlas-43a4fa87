@@ -1,0 +1,208 @@
+---
+title: "Boundary conditions"
+description: "How to configure periodic and Dirichlet boundary conditions for velocity and volume fraction fields using RobinBcCoefStrategy and muParserRobinBcCoefs."
+---
+
+The solver supports two types of velocity boundary conditions: **periodic** and **Dirichlet**. The choice is controlled by the `periodic_dimension` flag in `CartesianGeometry` and, for non-periodic directions, by registering `RobinBcCoefStrategy` objects in C++ code.
+
+<Note>
+  Only periodic and Dirichlet conditions are currently implemented for the velocity fields. Neumann (pure flux) conditions on velocity are not supported.
+</Note>
+
+---
+
+## Periodic boundary conditions
+
+Periodic BCs are the simplest option and require no extra C++ code. Set `periodic_dimension = 1` for each direction you want to be periodic inside the `CartesianGeometry` block:
+
+```text
+CartesianGeometry {
+   domain_boxes       = [(0,0), (N - 1, N - 1)]
+   x_lo               = -0.5, -0.5
+   x_up               =  0.5,  0.5
+   periodic_dimension =  1, 1   // doubly periodic
+}
+```
+
+A value of `0` in any entry disables periodicity in that direction and requires explicit BCs to be registered for both velocity and (optionally) volume fraction.
+
+```text
+CartesianGeometry {
+   domain_boxes       = [(0,0), (N - 1, N - 1)]
+   x_lo               = 0, 0
+   x_up               = 1, 1
+   periodic_dimension = 0, 0   // non-periodic: Dirichlet BCs required
+}
+```
+
+---
+
+## Dirichlet boundary conditions via RobinBcCoefStrategy
+
+For non-periodic directions, you must provide one `RobinBcCoefStrategy` object per velocity component per phase, and register them with the integrator before calling `initializePatchHierarchy`.
+
+The Robin BC formula is:
+
+```
+a(x) * u + b(x) * (du/dn) = g(x)
+```
+
+For a pure Dirichlet condition, set `a = 1` and `b = 0`; then `g` is the prescribed velocity value.
+
+### Registering BCs in C++
+
+```cpp
+std::vector<RobinBcCoefStrategy<NDIM>*> un_bc_coefs(NDIM, nullptr);
+std::vector<RobinBcCoefStrategy<NDIM>*> us_bc_coefs(NDIM, nullptr);
+
+for (int d = 0; d < NDIM; ++d)
+{
+    std::string un_name = "un_bcs_" + std::to_string(d);
+    un_bc_coefs[d] = new muParserRobinBcCoefs(
+        un_name, input_db->getDatabase(un_name), grid_geometry);
+
+    std::string us_name = "us_bcs_" + std::to_string(d);
+    us_bc_coefs[d] = new muParserRobinBcCoefs(
+        us_name, input_db->getDatabase(us_name), grid_geometry);
+}
+
+ins_integrator->registerPhysicalBoundaryConditions(un_bc_coefs, us_bc_coefs);
+```
+
+The integrator does **not** take ownership of these objects; you are responsible for deleting them after the simulation ends.
+
+---
+
+## muParserRobinBcCoefs input format
+
+`muParserRobinBcCoefs` reads its coefficients from a named sub-block in the input file. Each boundary face in 2D has an index 0–3 (left, right, bottom, top), so four entries are needed for each of `acoef`, `bcoef`, and `gcoef`.
+
+```text
+un_bcs_0 {
+   // a-coefficient (1.0 = Dirichlet, 0.0 = Neumann)
+   acoef_function_0 = "1.0"
+   acoef_function_1 = "1.0"
+   acoef_function_2 = "1.0"
+   acoef_function_3 = "1.0"
+
+   // b-coefficient (0.0 = Dirichlet, 1.0 = Neumann)
+   bcoef_function_0 = "0.0"
+   bcoef_function_1 = "0.0"
+   bcoef_function_2 = "0.0"
+   bcoef_function_3 = "0.0"
+
+   // g-coefficient: prescribed velocity value on each face
+   gcoef_function_0 = "X_1 * (1.0 - X_1)"   // left face
+   gcoef_function_1 = "X_1 * (1.0 - X_1)"   // right face
+   gcoef_function_2 = "0.0"                  // bottom face
+   gcoef_function_3 = "0.0"                  // top face
+}
+```
+
+The block name must match the name passed to the `muParserRobinBcCoefs` constructor (`un_bcs_0` above). The subscript on the block name corresponds to the velocity component direction (`0` = x-component, `1` = y-component).
+
+Expression strings follow the same muParser syntax as initial condition blocks: `X_0`, `X_1` for coordinates and `t` for time.
+
+<Tip>
+  You can reference top-level scalars defined earlier in the file inside `gcoef` expressions. For example, if `UN_0 = "sin(2*PI*X_0)*cos(2*PI*X_1)"` is defined at the top level, you can write `gcoef_function_0 = UN_0` to avoid repetition.
+</Tip>
+
+### Channel flow example
+
+A channel flow with parabolic inflow in the x-direction (`X_1 * (1 - X_1)`) and no-slip walls at top and bottom:
+
+```text
+// x-component of network velocity
+un_bcs_0 {
+   acoef_function_0 = "1.0"   acoef_function_1 = "1.0"
+   acoef_function_2 = "1.0"   acoef_function_3 = "1.0"
+   bcoef_function_0 = "0.0"   bcoef_function_1 = "0.0"
+   bcoef_function_2 = "0.0"   bcoef_function_3 = "0.0"
+   gcoef_function_0 = "X_1 * (1.0 - X_1)"   // parabolic inflow
+   gcoef_function_1 = "X_1 * (1.0 - X_1)"   // outflow (same profile)
+   gcoef_function_2 = "0.0"                  // no-slip bottom wall
+   gcoef_function_3 = "0.0"                  // no-slip top wall
+}
+
+// y-component of network velocity (zero everywhere)
+un_bcs_1 {
+   acoef_function_0 = "1.0"   acoef_function_1 = "1.0"
+   acoef_function_2 = "1.0"   acoef_function_3 = "1.0"
+   bcoef_function_0 = "0.0"   bcoef_function_1 = "0.0"
+   bcoef_function_2 = "0.0"   bcoef_function_3 = "0.0"
+   gcoef_function_0 = "0.0"   gcoef_function_1 = "0.0"
+   gcoef_function_2 = "0.0"   gcoef_function_3 = "0.0"
+}
+```
+
+The same structure is repeated for `us_bcs_0` and `us_bcs_1` for the solvent-phase velocity.
+
+---
+
+## Volume fraction boundary conditions
+
+When the volume fraction is not advected by an `AdvDiffHierarchyIntegrator`, you can optionally register Dirichlet BCs for `thn` via `registerVolumeFractionBoundaryConditions`:
+
+```cpp
+auto thn_bc = std::make_unique<muParserRobinBcCoefs>(
+    "thn_bc", input_db->getDatabase("thn_bc"), grid_geometry);
+
+ins_integrator->registerVolumeFractionBoundaryConditions(thn_bc.get());
+```
+
+When `thn` is advected with an `AdvDiffIntegrator`, register the BC with the advection–diffusion integrator instead:
+
+```cpp
+Pointer<CellVariable<NDIM, double>> thn_var =
+    ins_integrator->getNetworkVolumeFractionVariable();
+adv_diff_integrator->setPhysicalBcCoef(thn_var, thn_bc.get());
+```
+
+If no volume fraction BC object is provided, the solver falls back to **linear extrapolation** at physical boundaries.
+
+The input block has the same `acoef`/`bcoef`/`gcoef` structure as velocity BCs:
+
+```text
+thn_bc {
+   acoef_function_0 = "1.0"   acoef_function_1 = "1.0"
+   acoef_function_2 = "1.0"   acoef_function_3 = "1.0"
+   bcoef_function_0 = "0.0"   bcoef_function_1 = "0.0"
+   bcoef_function_2 = "0.0"   bcoef_function_3 = "0.0"
+   gcoef_function_0 = "0.5"   gcoef_function_1 = "0.5"
+   gcoef_function_2 = "0.5"   gcoef_function_3 = "0.5"
+}
+```
+
+<Note>
+  Volume fraction BCs are **ignored** at periodic boundaries regardless of how they are registered. Only non-periodic boundaries use the `thn_bc` values.
+</Note>
+
+---
+
+## BC face index reference
+
+In 2D, the four boundary faces have the following index assignments:
+
+| Index | Face    | Normal direction |
+|-------|---------|-----------------|
+| 0     | Left    | −x              |
+| 1     | Right   | +x              |
+| 2     | Bottom  | −y              |
+| 3     | Top     | +y              |
+
+In 3D, indices 4 (front, −z) and 5 (back, +z) are added and all six faces must be specified.
+
+---
+
+## MultigridCartesianGeometry block
+
+For non-periodic simulations, a second `MultigridCartesianGeometry` block with `periodic_dimension = 1, 1` is sometimes used to configure the multigrid preconditioner on a periodic auxiliary problem. This is an advanced option and is only required when the physical domain is non-periodic but you want the preconditioner to use periodic coarse-grid solves:
+
+```text
+MultigridCartesianGeometry {
+   domain_boxes       = [(0,0), (N - 1, N - 1)]
+   x_lo               = 0, 0
+   x_up               = 1, 1
+   periodic_dimension = 1, 1
+}
+```

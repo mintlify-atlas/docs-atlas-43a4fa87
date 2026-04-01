@@ -1,0 +1,148 @@
+---
+title: 'FullFACPreconditioner'
+description: 'FAC multigrid preconditioner optimised as a single-pass preconditioner for the two-fluid Stokes system.'
+---
+
+## Overview
+
+`FullFACPreconditioner` is a concrete `IBTK::FACPreconditioner` implementing a FAC (full approximation scheme multigrid) preconditioner. It is optimised for use as a **single-pass preconditioner** inside a Krylov solver rather than as a stand-alone iterative solver, and is particularly efficient when pre-smoothing sweeps are not required.
+
+**Namespace:** `multiphase`
+
+**Header:** `multiphase/FullFACPreconditioner.h`
+
+The class extends `IBTK::FACPreconditioner` and adds support for a dense patch hierarchy. When initialised, it can clone a base AMR hierarchy into a uniformly refined (dense) hierarchy, apply the multigrid cycle on that dense hierarchy, and transfer results back. This avoids complications that arise from applying coarse-level relaxation on a hierarchy with refinement gaps.
+
+<Note>
+  This class is not suitable for use as a stand-alone solver. Use it only as a preconditioner in conjunction with an iterative Krylov method such as `IBTK::PETScKrylovLinearSolver`.
+</Note>
+
+## Input database parameters
+
+The following keys are read from the input database passed to the constructor. All have sensible defaults and need not be specified unless you want to override them.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `cycle_type` | string | `"V_CYCLE"` | Multigrid cycle type. See `setMGCycleType()`. |
+| `num_pre_sweeps` | int | `0` | Number of pre-smoothing sweeps per level. |
+| `num_post_sweeps` | int | `2` | Number of post-smoothing sweeps per level. |
+| `enable_logging` | bool | `FALSE` | Whether to write solver log output. |
+
+## Constructor
+
+```cpp
+FullFACPreconditioner(
+    std::string object_name,
+    SAMRAI::tbox::Pointer<IBTK::FACPreconditionerStrategy> fac_strategy,
+    SAMRAI::tbox::Pointer<SAMRAI::tbox::Database> input_db,
+    const std::string& default_options_prefix);
+```
+
+<ParamField path="object_name" type="string" required>
+  Unique name for this preconditioner object, used in logging and the SAMRAI object registry.
+</ParamField>
+
+<ParamField path="fac_strategy" type="SAMRAI::tbox::Pointer<IBTK::FACPreconditionerStrategy>" required>
+  Strategy object that implements the level smoothing, restriction, and prolongation operations. Typically a `MultiphaseStaggeredStokesBoxRelaxationFACOperator`.
+</ParamField>
+
+<ParamField path="input_db" type="SAMRAI::tbox::Pointer<SAMRAI::tbox::Database>" required>
+  Input database from which `cycle_type`, `num_pre_sweeps`, `num_post_sweeps`, and `enable_logging` are read.
+</ParamField>
+
+<ParamField path="default_options_prefix" type="const std::string&" required>
+  Prefix string used when constructing default option names, e.g. for PETSc option handling within the strategy.
+</ParamField>
+
+## Methods
+
+### `solveSystem`
+
+```cpp
+bool solveSystem(
+    SAMRAI::solv::SAMRAIVectorReal<NDIM, double>& x,
+    SAMRAI::solv::SAMRAIVectorReal<NDIM, double>& b) override;
+```
+
+Solves the linear system A*x = b using the FAC multigrid cycle. Returns `true` if the solver converged to the specified tolerances, `false` otherwise.
+
+Patch data in `x` and `b` must be allocated on all patch interiors over the hierarchy range before calling this method. If `initializeSolverState` has not been called, the solver initialises and deallocates hierarchy-dependent data automatically around the solve.
+
+<ParamField path="x" type="SAMRAI::solv::SAMRAIVectorReal<NDIM, double>&" required>
+  Solution vector. Must be allocated on all patches; initial values are used as the starting iterate.
+</ParamField>
+
+<ParamField path="b" type="SAMRAI::solv::SAMRAIVectorReal<NDIM, double>&" required>
+  Right-hand-side vector. Must have the same patch hierarchy and variable structure as `x`.
+</ParamField>
+
+---
+
+### `initializeSolverState`
+
+```cpp
+void initializeSolverState(
+    const SAMRAI::solv::SAMRAIVectorReal<NDIM, double>& x,
+    const SAMRAI::solv::SAMRAIVectorReal<NDIM, double>& b) override;
+```
+
+Allocates and caches all hierarchy-dependent data required by `solveSystem`. Call this once before a sequence of solves on the same hierarchy to avoid redundant setup overhead. Safe to call when state is already initialised; existing state is deallocated first.
+
+When any operator or preconditioner objects have been registered with this class, they are also initialised by this call.
+
+<ParamField path="x" type="const SAMRAI::solv::SAMRAIVectorReal<NDIM, double>&" required>
+  Representative solution vector defining the hierarchy configuration, variable structure, and ghost cell widths.
+</ParamField>
+
+<ParamField path="b" type="const SAMRAI::solv::SAMRAIVectorReal<NDIM, double>&" required>
+  Representative right-hand-side vector. Must match `x` in hierarchy and structure.
+</ParamField>
+
+---
+
+### `deallocateSolverState`
+
+```cpp
+void deallocateSolverState() override;
+```
+
+Releases all hierarchy-dependent data allocated by `initializeSolverState`. Also deallocates any registered operator or preconditioner objects. Safe to call when already deallocated.
+
+Call this after the last solve in a sequence, or whenever the hierarchy configuration changes and a fresh `initializeSolverState` will be required.
+
+---
+
+### `transferToDense`
+
+```cpp
+void transferToDense(int idx, bool deallocate_data = true);
+void transferToDense(std::set<int> idxs, bool deallocate_data = true);
+```
+
+Allocates patch data for the given index (or set of indices) on the dense hierarchy and transfers data from the base hierarchy. If `deallocate_data` is `true`, the dense-hierarchy patch data is automatically deallocated when `deallocateSolverState` is called.
+
+Use this to make non-solution data (e.g. the volume fraction or drag coefficient) available to the FAC strategy on the dense hierarchy.
+
+<ParamField path="idx" type="int" required>
+  A single patch data index to transfer to the dense hierarchy.
+</ParamField>
+
+<ParamField path="idxs" type="std::set<int>" required>
+  A set of patch data indices to transfer to the dense hierarchy.
+</ParamField>
+
+<ParamField path="deallocate_data" type="bool" default="true">
+  When `true`, the transferred data on the dense hierarchy is freed during `deallocateSolverState`. Set to `false` if you manage deallocation manually.
+</ParamField>
+
+---
+
+### `getDenseHierarchy`
+
+```cpp
+SAMRAI::tbox::Pointer<SAMRAI::hier::PatchHierarchy<NDIM>> getDenseHierarchy();
+```
+
+Returns the internally owned dense (uniformly refined) patch hierarchy. This hierarchy is constructed during `initializeSolverState` by filling all refinement gaps of the base hierarchy with additional patch levels.
+
+Returns a null pointer if `initializeSolverState` has not yet been called.

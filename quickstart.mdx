@@ -1,80 +1,149 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Run the four-roll-mill example end-to-end: compile, configure, execute, and visualize your first multiphase simulation."
 ---
 
-## Get started in three steps
+The four-roll-mill (`frm`) example is the primary validation case for AMR Multiphase. It simulates a two-phase Newtonian fluid driven by a body force that produces four counter-rotating vortices on the periodic domain $[-0.5, 0.5]^2$. The network-phase volume fraction is initialized as a smooth radial blob at the center of the domain.
 
-Get your documentation site running locally and make your first customization.
+<Note>
+Complete the [build and install](/building) steps before continuing. You need a compiled `frm` executable in your `build/frm/` directory.
+</Note>
 
-### Step 1: Set up your local environment
+## Running the four-roll-mill simulation
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
+  <Step title="Navigate to the frm directory">
+    The input file and executable are both located in the `frm/` subdirectory of your build tree.
 
-### Step 2: Deploy your changes
+    ```bash
+    cd build/frm
+    ```
+  </Step>
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+  <Step title="Run the executable">
+    Launch `frm` with `input2d` as the input file and pass solver options on the command line:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    ```bash
+    ./frm input2d \
+        -solver_ksp_initial_guess_nonzero FALSE \
+        -solver_ksp_monitor_true_residual \
+        -solver_ksp_type fgmres \
+        -solver_ksp_max_it 20 \
+        -solver_ksp_rtol 1e-14
+    ```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    These flags configure the PETSc Krylov solver used for the coupled saddle-point system at each time step:
 
-### Step 3: Go live
+    | Flag | Value | Effect |
+    |---|---|---|
+    | `-solver_ksp_initial_guess_nonzero` | `FALSE` | Start each linear solve from zero initial guess |
+    | `-solver_ksp_monitor_true_residual` | — | Print the true (unpreconditioned) residual at each iteration |
+    | `-solver_ksp_type` | `fgmres` | Use flexible GMRES, required when the preconditioner is non-stationary |
+    | `-solver_ksp_max_it` | `20` | Maximum Krylov iterations per linear solve |
+    | `-solver_ksp_rtol` | `1e-14` | Relative convergence tolerance for the linear solver |
+  </Step>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+  <Step title="Monitor progress via log files">
+    While the simulation runs, progress is written to the log file named `output` in the working directory. You can tail it in a separate terminal:
+
+    ```bash
+    tail -f output
+    ```
+
+    Each time step prints the current simulation time, time step size, and linear solver convergence information. Logging is controlled by `ENABLE_LOGGING = TRUE` in `input2d`.
+  </Step>
+
+  <Step title="Visualize results with VisIt">
+    Visualization dumps are written to the `viz2d_four_roll_mill/` directory at the interval set by `VIZ_DUMP_TIME_INTERVAL`. Open VisIt and load the `dumps.visit` file from that directory:
+
+    1. Launch VisIt.
+    2. Select **File → Open** and navigate to `build/frm/viz2d_four_roll_mill/dumps.visit`.
+    3. Add a **Pseudocolor** plot on the variable `Thn_n` to see the network-phase volume fraction.
+    4. Use the time slider to step through the simulation.
+
+    Hierarchy data for restart and post-processing is written to `hier_data_four_roll_mill/`.
+  </Step>
+</Steps>
+
+## Key input file parameters
+
+The simulation is fully controlled by `frm/input2d`. The parameters below are the most important ones to understand and tune.
+
+### Grid and time stepping
+
+| Parameter | Default | Description |
+|---|---|---|
+| `N` | `64` | Number of grid cells along each axis on the coarsest level. The domain is $[-0.5, 0.5]^2$, so `DX = 1.0 / N`. |
+| `CFL_MAX` | `0.1` | Maximum CFL number. The time step is set to `DT_MAX = CFL_MAX * DX / U_MAX`. |
+| `U_MAX` | `20.0` | Estimate of the maximum velocity in the domain, used to set the time step. |
+| `END_TIME` | `1.0` | Simulation end time in non-dimensional units. |
+| `REGRID_INTERVAL` | `10` | Number of time steps between AMR regridding operations. |
+| `MAX_MULTIGRID_LEVELS` | `6` | Maximum number of levels allowed in the multigrid preconditioner hierarchy. |
+
+### Fluid parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `ETA_S` | `0.04` | Solvent-phase dynamic viscosity $\eta_s$. |
+| `ETA_N` | `4.0` | Network-phase dynamic viscosity $\eta_n$. |
+| `NU_N` | `1.0` | Network-phase volume-fraction mobility coefficient $\nu_n$. |
+| `NU_S` | `1.0` | Solvent-phase volume-fraction mobility coefficient $\nu_s$. |
+| `XI` | `250.0*ETA_S` | Drag coupling coefficient between the two phases. Higher values increase inter-phase coupling. |
+| `RHO` | `1.0` | Fluid density (same for both phases). |
+| `W` | `0.75` | Solver relaxation parameter used by the box-relaxation smoother. |
+
+### Initial condition for the volume fraction
+
+```
+DELTA = 0.175
+thn {
+   function = "0.25 + 0.25*((sqrt(X_0*X_0+X_1*X_1)<delta) ? \
+     (1989.0/(896*PI)*(1.0-((X_0*X_0+X_1*X_1)/(delta*delta))^4.0)^4.0* \
+     (4.0*((X_0*X_0+X_1*X_1)/(delta*delta))^4.0+1.0)) : 0.0)"
+}
+```
+
+`DELTA = 0.175` sets the radius of the initial volume-fraction blob. The function evaluates to a smooth radially symmetric bump of amplitude 0.25 centered at the origin, on top of a background value of 0.25.
+
+### Convective discretization
+
+| Parameter | Default | Description |
+|---|---|---|
+| `ADV_DIFF_CONVECTIVE_OP_TYPE` | `"CUI"` | Convective operator limiter. Options include `UPWIND`, `CUI`, `FBICS`, and `MGAMMA`. |
+| `ADV_DIFF_CONVECTIVE_TS_TYPE` | `"ADAMS_BASHFORTH"` | Time-stepping scheme for the advection-diffusion integrator. |
+| `ADV_DIFF_CONVECTIVE_FORM` | `"CONSERVATIVE"` | Form of the convective term: `CONSERVATIVE` or `ADVECTIVE`. |
+| `VISCOUS_TS_TYPE` | `"TRAPEZOIDAL_RULE"` | Time-stepping scheme for the viscous terms. |
+
+### Viscoelastic model
+
+```
+USE_CF = FALSE
+```
+
+The `USE_CF` flag enables the Oldroyd-B conformation tensor model for viscoelastic simulations. It is disabled in the default four-roll-mill configuration, which uses a purely Newtonian model. Set `USE_CF = TRUE` to activate it and configure the `CFMultiphaseOldroydB` parameters.
+
+### Visualization and output
+
+| Parameter | Default | Description |
+|---|---|---|
+| `VIZ_DUMP_TIME_INTERVAL` | `0.005` | Simulation time between visualization dumps. |
+| `viz_dump_dirname` | `"viz2d_four_roll_mill"` | Directory for VisIt visualization output. |
+| `data_dump_dirname` | `"hier_data_four_roll_mill"` | Directory for hierarchy restart data. |
+| `log_file_name` | `"output"` | Name of the text log file written during the run. |
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Convergence testing" icon="chart-line" href="/examples/convergence-testing">
+    Run `frm_convergence` to verify second-order accuracy across grid refinements
+  </Card>
+  <Card title="Physical boundary conditions" icon="border-outer" href="/examples/physical-bc">
+    Explore the channel flow example with non-periodic boundary conditions
+  </Card>
+  <Card title="Input parameters reference" icon="sliders" href="/configuration/input-parameters">
+    Full reference for every parameter in the input file
+  </Card>
+  <Card title="Multiphase model" icon="droplets" href="/concepts/multiphase-model">
+    Understand the two-fluid mixture equations and physical parameters
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

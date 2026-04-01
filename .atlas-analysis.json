@@ -1,0 +1,97 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "AMR Multiphase Fluid Solver",
+  "projectDescription": "A C++ library for simulating multiphase viscoelastic mixture flows on adaptively refined grids using second-order accurate staggered-grid methods.",
+  "theme": "aspen",
+  "primaryColor": "#912d37",
+  "lightColor": "#776f67",
+  "darkColor": "#d3cfcc",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "building",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "concepts/multiphase-model",
+              "concepts/amr",
+              "concepts/numerical-methods",
+              "concepts/viscoelastic-fluids"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/input-parameters",
+              "configuration/boundary-conditions",
+              "configuration/solver-settings"
+            ]
+          },
+          {
+            "group": "Examples",
+            "pages": [
+              "examples/four-roll-mill",
+              "examples/convergence-testing",
+              "examples/physical-bc"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Classes",
+            "pages": [
+              "api/multiphase-staggered-hierarchy-integrator",
+              "api/multiphase-staggered-stokes-operator",
+              "api/multiphase-convective-manager",
+              "api/full-fac-preconditioner"
+            ]
+          },
+          {
+            "group": "Viscoelastic Models",
+            "pages": [
+              "api/cf-multiphase-oldroyd-b",
+              "api/multiphase-parameters"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Second-order accurate AMR staggered-grid solver for two-phase flows",
+    "Support for Newtonian and non-Newtonian (viscoelastic Oldroyd-B) fluid models",
+    "Efficient multigrid FAC preconditioner for saddle-point systems",
+    "Gradient-based adaptive mesh refinement for resolving sharp interfaces",
+    "Multiple convective operator limiter types: UPWIND, CUI, FBICS, MGAMMA",
+    "CFL-stable time stepping with trapezoidal rule and Adams-Bashforth schemes",
+    "Built on IBAMR/SAMRAI/PETSc for scalable parallel computation",
+    "VisIt-compatible visualization output"
+  ],
+  "publicApiSurface": [
+    "multiphase::MultiphaseStaggeredHierarchyIntegrator",
+    "multiphase::MultiphaseStaggeredStokesOperator",
+    "multiphase::MultiphaseConvectiveManager",
+    "multiphase::FullFACPreconditioner",
+    "multiphase::MultiphaseStaggeredStokesBoxRelaxationFACOperator",
+    "multiphase::CFMultiphaseOldroydB",
+    "multiphase::MultiphaseParameters",
+    "setViscosityCoefficient(eta_n, eta_s)",
+    "setDragCoefficient(xi, nu_n, nu_s)",
+    "setInitialData(un_fcn, us_fcn, p_fcn)",
+    "setNetworkVolumeFractionFunction(thn_fcn)",
+    "advectNetworkVolumeFraction(adv_diff_integrator)",
+    "registerPhysicalBoundaryConditions(un_bc_coefs, us_bc_coefs)"
+  ]
+}

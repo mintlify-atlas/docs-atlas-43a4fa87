@@ -1,0 +1,96 @@
+---
+title: "Multiphase model"
+description: "The two-fluid mixture equations that govern network and solvent phase dynamics, including momentum coupling and incompressibility."
+---
+
+The solver implements a two-fluid mixture model in which two distinct fluid phases — a **network** phase and a **solvent** phase — coexist and interact within the same domain. Each phase occupies a fraction of the local volume and carries its own velocity field. The phases are coupled through a viscous drag term that transfers momentum between them.
+
+For full mathematical details and numerical validation, see the companion paper: [Adaptive Mesh Refinement for Two-Phase Viscoelastic Fluid Mixture Models](https://arxiv.org/abs/2409.19974).
+
+## Phases and volume fractions
+
+The two phases are:
+
+- **Network phase** — a polymer-like or gel-like component with velocity $\mathbf{u}_n$ and volume fraction $\theta_n$.
+- **Solvent phase** — a Newtonian fluid component with velocity $\mathbf{u}_s$ and volume fraction $\theta_s$.
+
+The volume fractions are constrained to sum to one everywhere:
+
+$$
+\theta_s = 1 - \theta_n
+$$
+
+The network volume fraction $\theta_n$ is a cell-centered scalar field that evolves over time, either prescribed as a function or advected with the fluid.
+
+## Physical parameters
+
+The model requires the following physical parameters, defined in `MultiphaseParameters`:
+
+| Parameter | Symbol | Description |
+|-----------|--------|-------------|
+| `rho` | $\rho$ | Fluid density (shared by both phases) |
+| `eta_n` | $\eta_n$ | Dynamic viscosity of the network phase |
+| `eta_s` | $\eta_s$ | Dynamic viscosity of the solvent phase |
+| `xi` | $\xi$ | Drag coefficient governing momentum exchange between phases |
+| `nu_n` | $\nu_n$ | Drag scaling factor for the network phase |
+| `nu_s` | $\nu_s$ | Drag scaling factor for the solvent phase |
+
+The drag coefficient `xi` may also be spatially variable. When a patch data index (`xi_idx`) is registered, the solver uses the variable field instead of the constant value.
+
+<Note>
+In the `frm/input2d` example, `XI = 250.0 * ETA_S`, which couples the drag strength to the solvent viscosity. Larger values of `xi` enforce stronger velocity coupling between the two phases.
+</Note>
+
+## Coupled momentum equations
+
+The solver applies the following block operator to the state vector $[\mathbf{u}_n,\, \mathbf{u}_s,\, p]^T$:
+
+$$
+\begin{bmatrix}
+C\,\theta_n + \mathcal{A}_n + D_u\,\frac{\xi}{\nu_n}\,\theta_n\theta_s
+& -D_u\,\frac{\xi}{\nu_n}\,\theta_n\theta_s
+& D_p\,\theta_n\,\nabla \\[6pt]
+-D_u\,\frac{\xi}{\nu_s}\,\theta_n\theta_s
+& C\,\theta_s + \mathcal{A}_s + D_u\,\frac{\xi}{\nu_s}\,\theta_n\theta_s
+& D_p\,\theta_s\,\nabla \\[6pt]
+D_\text{div}\,\nabla\cdot(\theta_n\,\cdot)
+& D_\text{div}\,\nabla\cdot(\theta_s\,\cdot)
+& 0
+\end{bmatrix}
+\begin{bmatrix} \mathbf{u}_n \\ \mathbf{u}_s \\ p \end{bmatrix}
+$$
+
+where the viscous operator for each phase $i \in \{n, s\}$ is:
+
+$$
+\mathcal{A}_i = D\,\eta_i\,\nabla\cdot\!\left(\theta_i\left[(\nabla + \nabla^T) - (\nabla\cdot)\,\mathbf{I}\right]\right)
+$$
+
+The scalar coefficients $C$, $D_u$, $D_p$, and $D_\text{div}$ are set by the time-stepping scheme (see [Numerical methods](/concepts/numerical-methods)).
+
+### Momentum exchange
+
+The off-diagonal blocks encode the drag coupling. The term $\frac{\xi}{\nu_n}\,\theta_n\theta_s$ appears in the network equation, and $\frac{\xi}{\nu_s}\,\theta_n\theta_s$ appears in the solvent equation. This coupling vanishes when either $\theta_n = 0$ or $\theta_s = 0$, recovering single-phase Stokes flow.
+
+## Incompressibility constraint
+
+The solver enforces a mixture incompressibility condition. Rather than requiring each phase to be individually divergence-free, the constraint is imposed on the volume-averaged flux:
+
+$$
+\nabla\cdot(\theta_n\,\mathbf{u}_n) + \nabla\cdot(\theta_s\,\mathbf{u}_s) = 0
+$$
+
+This is the third block row of the operator matrix above, with pressure $p$ acting as a Lagrange multiplier enforcing the constraint.
+
+<Tip>
+The shared pressure $p$ couples both momentum equations through the volume-fraction-weighted gradient terms $\theta_n\,\nabla p$ and $\theta_s\,\nabla p$ in the first two block rows.
+</Tip>
+
+## Network volume fraction evolution
+
+The network volume fraction $\theta_n$ is either:
+
+1. **Prescribed** — set analytically as a function of space and time via `setNetworkVolumeFractionFunction`.
+2. **Advected** — transported with the fluid using an advection-diffusion integrator registered via `advectNetworkVolumeFraction`.
+
+When advected, $\theta_n$ satisfies a conservation equation and is updated each time step alongside the velocity and pressure fields.

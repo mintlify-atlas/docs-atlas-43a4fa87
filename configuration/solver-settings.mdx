@@ -1,0 +1,237 @@
+---
+title: "Solver settings"
+description: "Configure the Krylov solver, FAC multigrid preconditioner, time-stepping scheme, advection–diffusion integrator, and performance timers."
+---
+
+The solver is built on PETSc Krylov solvers and an in-house Full Approximation Cycle (FAC) multigrid preconditioner. Most settings live inside the `INSVCTwoFluidStaggeredHierarchyIntegrator` block of the input file, but PETSc options can also be passed on the command line.
+
+---
+
+## Krylov solver (solver_db)
+
+The `solver_db` sub-block inside `INSVCTwoFluidStaggeredHierarchyIntegrator` is forwarded to the `PETScKrylovLinearSolver` that drives the coupled momentum–pressure system.
+
+```text
+INSVCTwoFluidStaggeredHierarchyIntegrator {
+   ...
+   solver_db {
+      ksp_type = "fgmres"
+   }
+}
+```
+
+<ParamField path="solver_db.ksp_type" type="string" default="fgmres">
+  PETSc Krylov solver type. `fgmres` (Flexible GMRES) is strongly recommended because the FAC preconditioner is not a fixed linear operator — it changes slightly from iteration to iteration. Standard `gmres` may diverge in this case.
+</ParamField>
+
+### PETSc command-line options
+
+PETSc solver parameters can be set on the command line at runtime without modifying the input file. The solver uses the prefix `solver_`. Common options:
+
+```bash
+./executable input2d \
+  -solver_ksp_type fgmres \
+  -solver_ksp_max_it 20 \
+  -solver_ksp_rtol 1e-14
+```
+
+<ParamField path="-solver_ksp_type" type="string">
+  Override the Krylov solver type at runtime. Must be a valid PETSc `KSPType` string.
+</ParamField>
+
+<ParamField path="-solver_ksp_max_it" type="integer">
+  Maximum number of Krylov iterations per time step. If the solver does not converge in this many iterations, it reports a divergence warning and continues.
+</ParamField>
+
+<ParamField path="-solver_ksp_rtol" type="number">
+  Relative residual tolerance for convergence. The solve is considered converged when `||r|| / ||r_0|| < rtol`. A value of `1e-14` is used for convergence testing; `1e-8` to `1e-10` is adequate for most production runs.
+</ParamField>
+
+<Tip>
+  To monitor residuals at every Krylov iteration, add `-solver_ksp_monitor` to the command line. This is useful when diagnosing slow convergence or unexpected divergence.
+</Tip>
+
+---
+
+## FAC multigrid preconditioner (precond_db)
+
+The `precond_db` sub-block configures the `FullFACPreconditioner` and its underlying `MultiphaseStaggeredStokesBoxRelaxationFACOperator`.
+
+```text
+INSVCTwoFluidStaggeredHierarchyIntegrator {
+   ...
+   w                  = 0.75
+   use_preconditioner = TRUE
+
+   precond_db {
+      cycle_type           = "V_CYCLE"
+      num_pre_sweeps       = 5
+      num_post_sweeps      = 5
+      enable_logging       = TRUE
+      max_multigrid_levels = MAX_MULTIGRID_LEVELS
+   }
+}
+```
+
+<ParamField path="precond_db.cycle_type" type="string" default="V_CYCLE">
+  Multigrid cycle type. `V_CYCLE` is the standard choice and is the only type currently tested with this solver.
+</ParamField>
+
+<ParamField path="precond_db.num_pre_sweeps" type="integer" default="5">
+  Number of box-relaxation smoothing sweeps applied before visiting coarser levels (pre-smoothing). Increasing this improves convergence per outer Krylov iteration at the cost of more work per step. Values of 0–5 are common; 0 pre-sweeps with 5 post-sweeps works well for many problems.
+</ParamField>
+
+<ParamField path="precond_db.num_post_sweeps" type="integer" default="5">
+  Number of box-relaxation smoothing sweeps applied after returning from coarser levels (post-smoothing).
+</ParamField>
+
+<ParamField path="precond_db.max_multigrid_levels" type="integer">
+  Number of levels used inside the preconditioner hierarchy. Should match or be less than the `MAX_MULTIGRID_LEVELS` top-level scalar. The preconditioner coarsens the grid until this many levels are used, independently of `GriddingAlgorithm.max_levels`.
+</ParamField>
+
+<ParamField path="precond_db.enable_logging" type="boolean" default="TRUE">
+  Enable logging inside the FAC preconditioner. When `TRUE`, the preconditioner reports convergence information for each cycle.
+</ParamField>
+
+<Warning>
+  The relaxation weight `w` is set at the top level of `INSVCTwoFluidStaggeredHierarchyIntegrator`, not inside `precond_db`. Values below 0.5 can cause divergence; values above 1.0 are typically unstable. Start with `w = 0.75`.
+</Warning>
+
+---
+
+## Viscous time-stepping scheme
+
+<ParamField path="VISCOUS_TS_TYPE" type="string" default="TRAPEZOIDAL_RULE">
+  Time-stepping method for the viscous stress terms. Set this top-level scalar and also pass it into the integrator block:
+
+  ```text
+  VISCOUS_TS_TYPE = "TRAPEZOIDAL_RULE"
+
+  INSVCTwoFluidStaggeredHierarchyIntegrator {
+     viscous_time_stepping_type = VISCOUS_TS_TYPE
+     ...
+  }
+  ```
+
+  `TRAPEZOIDAL_RULE` (Crank–Nicolson) is required for second-order temporal accuracy. An explicit scheme would impose a severe stability constraint on the time step for diffusion-dominated flows.
+</ParamField>
+
+---
+
+## Advection–diffusion integrator (AdvDiffIntegrator)
+
+The `AdvDiffIntegrator` block configures the `AdvDiffSemiImplicitHierarchyIntegrator` used to transport the network volume fraction `thn`.
+
+```text
+ADV_DIFF_NUM_CYCLES      = 1
+ADV_DIFF_CONVECTIVE_OP_TYPE  = "CUI"
+ADV_DIFF_CONVECTIVE_TS_TYPE  = "ADAMS_BASHFORTH"
+ADV_DIFF_CONVECTIVE_FORM     = "CONSERVATIVE"
+
+AdvDiffIntegrator {
+   start_time                 = START_TIME
+   end_time                   = END_TIME
+   num_cycles                 = ADV_DIFF_NUM_CYCLES
+   convective_time_stepping_type = ADV_DIFF_CONVECTIVE_TS_TYPE
+   convective_op_type            = ADV_DIFF_CONVECTIVE_OP_TYPE
+   convective_difference_form    = ADV_DIFF_CONVECTIVE_FORM
+   dt_max                        = DT_MAX
+   enable_logging                = ENABLE_LOGGING
+}
+```
+
+<ParamField path="AdvDiffIntegrator.convective_op_type" type="string" default="CUI">
+  Convective operator used to transport the volume fraction. Options:
+  - `CUI` — Cubic Upwind Interpolation. Third-order accurate and the default choice.
+  - `PPM` — Piecewise Parabolic Method.
+  - `UPWIND` — First-order upwind (diffusive; use only for debugging).
+</ParamField>
+
+<ParamField path="AdvDiffIntegrator.convective_time_stepping_type" type="string" default="ADAMS_BASHFORTH">
+  Time-stepping method for the convective term in the advection–diffusion equation.
+  - `ADAMS_BASHFORTH` — Second-order explicit multi-step method.
+  - `FORWARD_EULER` — First-order explicit (for startup or debugging).
+  - `TRAPEZOIDAL_RULE` — Second-order implicit.
+</ParamField>
+
+<ParamField path="AdvDiffIntegrator.convective_difference_form" type="string" default="CONSERVATIVE">
+  Discretization form of the convective term.
+  - `CONSERVATIVE` — Uses the divergence form `∇·(u θ)`. Preferred when the velocity field may not be exactly divergence-free.
+  - `ADVECTIVE` — Uses the advective form `u·∇θ`.
+</ParamField>
+
+<ParamField path="AdvDiffIntegrator.num_cycles" type="integer" default="1">
+  Number of predictor–corrector cycles per time step for the advection–diffusion solve. Should be consistent with `NUM_CYCLES` in the fluid integrator.
+</ParamField>
+
+---
+
+## TimerManager block
+
+The `TimerManager` block activates IBAMR's built-in wall-clock timers. Timer output is written to the log file at the end of the run.
+
+```text
+TimerManager {
+   print_exclusive = FALSE
+   print_total     = TRUE
+   print_threshold = 1.0
+   timer_list      = "IBTK::*::*"
+}
+```
+
+<ParamField path="TimerManager.print_exclusive" type="boolean" default="FALSE">
+  Print exclusive time (time in a routine excluding time in called sub-routines). Useful for profiling individual functions.
+</ParamField>
+
+<ParamField path="TimerManager.print_total" type="boolean" default="TRUE">
+  Print total (inclusive) time for each timer. This is the most useful mode for identifying overall bottlenecks.
+</ParamField>
+
+<ParamField path="TimerManager.print_threshold" type="number" default="1.0">
+  Minimum percentage of total runtime a timer must represent to appear in the output. Increase this to suppress output from fast routines.
+</ParamField>
+
+<ParamField path="TimerManager.timer_list" type="string">
+  Glob pattern controlling which timers are active. `"IBTK::*::*"` activates all IBTK timers. For more detail, add `"IBAMR::*::*"` or `"*::*::*"` to capture all SAMRAI and application-level timers.
+
+  ```text
+  timer_list = "IBTK::*::*", "IBAMR::*::*", "*::*::*"
+  ```
+</ParamField>
+
+---
+
+## StandardTagAndInitialize block
+
+Controls the cell-tagging strategy used by `GriddingAlgorithm` to decide where to refine.
+
+```text
+StandardTagAndInitialize {
+   tagging_method = "GRADIENT_DETECTOR"
+}
+```
+
+<ParamField path="StandardTagAndInitialize.tagging_method" type="string" default="GRADIENT_DETECTOR">
+  How to identify cells for refinement:
+  - `GRADIENT_DETECTOR` — Tags cells where the volume-fraction gradient exceeds `grad_abs_thresh`. Requires `use_grad_tagging = TRUE` in the integrator block.
+  - `REFINE_BOXES` — Tags a fixed set of index-space boxes specified in a `RefineBoxes` sub-block. Useful for convergence tests where the refinement region is known in advance.
+</ParamField>
+
+---
+
+## LoadBalancer block
+
+```text
+LoadBalancer {
+   bin_pack_method    = "SPATIAL"
+   max_workload_factor = 1
+}
+```
+
+<ParamField path="LoadBalancer.bin_pack_method" type="string" default="SPATIAL">
+  Algorithm used to assign patches to MPI ranks. `SPATIAL` groups spatially nearby patches together, which tends to minimize communication. The alternative is `GREEDY`.
+</ParamField>
+
+<ParamField path="LoadBalancer.max_workload_factor" type="number" default="1">
+  Maximum allowed imbalance factor. A value of `1` means all ranks should have equal workload. Increasing this allows more imbalance in exchange for potentially simpler patch distributions.
+</ParamField>

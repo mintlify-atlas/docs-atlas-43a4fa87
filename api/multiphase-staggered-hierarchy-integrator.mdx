@@ -1,0 +1,394 @@
+---
+title: 'MultiphaseStaggeredHierarchyIntegrator'
+description: 'Staggered-grid solver for the incompressible two-fluid Stokes equations on an AMR patch hierarchy.'
+---
+
+## Overview
+
+`MultiphaseStaggeredHierarchyIntegrator` is the top-level time integrator for the two-fluid (network + solvent) Stokes system. It extends `IBAMR::INSHierarchyIntegrator` and manages the full AMR hierarchy lifecycle: variable registration, solver setup, time advancement, regridding, and visualization output.
+
+**Namespace:** `multiphase`
+
+**Header:** `multiphase/MultiphaseStaggeredHierarchyIntegrator.h`
+
+The integrator drives a staggered MAC (marker-and-cell) discretisation. It owns a `MultiphaseStaggeredStokesOperator` applied inside a PETSc Krylov solver, optionally preconditioned by a `FullFACPreconditioner`.
+
+## Constructor
+
+```cpp
+MultiphaseStaggeredHierarchyIntegrator(
+    std::string object_name,
+    SAMRAI::tbox::Pointer<SAMRAI::tbox::Database> input_db,
+    SAMRAI::tbox::Pointer<SAMRAI::geom::CartesianGridGeometry<NDIM>> grid_geometry,
+    bool register_for_restart = true);
+```
+
+<ParamField path="object_name" type="string" required>
+  Unique name for this integrator object, used in logging and restart files.
+</ParamField>
+
+<ParamField path="input_db" type="SAMRAI::tbox::Pointer<SAMRAI::tbox::Database>" required>
+  Input database containing solver configuration (e.g. time stepping type, preconditioner settings, convective limiter).
+</ParamField>
+
+<ParamField path="grid_geometry" type="SAMRAI::tbox::Pointer<SAMRAI::geom::CartesianGridGeometry<NDIM>>" required>
+  Cartesian grid geometry describing the physical domain.
+</ParamField>
+
+<ParamField path="register_for_restart" type="bool" default="true">
+  Whether to register this object with the SAMRAI restart manager. Set to `false` when restarts are not needed.
+</ParamField>
+
+## Variable accessors
+
+### `getSolventVariable`
+
+```cpp
+SAMRAI::tbox::Pointer<SAMRAI::pdat::SideVariable<NDIM, double>>
+getSolventVariable() const;
+```
+
+Returns the side-centered variable representing the solvent (fluid) velocity **u_s**.
+
+---
+
+### `getNetworkVariable`
+
+```cpp
+SAMRAI::tbox::Pointer<SAMRAI::pdat::SideVariable<NDIM, double>>
+getNetworkVariable() const;
+```
+
+Returns the side-centered variable representing the network velocity **u_n**.
+
+---
+
+### `getPressureVariable`
+
+```cpp
+SAMRAI::tbox::Pointer<SAMRAI::pdat::CellVariable<NDIM, double>>
+getPressureVariable() const;
+```
+
+Returns the cell-centered pressure variable **p**.
+
+---
+
+### `getNetworkVolumeFractionVariable`
+
+```cpp
+SAMRAI::tbox::Pointer<SAMRAI::pdat::CellVariable<NDIM, double>>
+getNetworkVolumeFractionVariable() const;
+```
+
+Returns the cell-centered variable for the network volume fraction **θ_n**.
+
+## Boundary conditions
+
+### `registerPhysicalBoundaryConditions`
+
+```cpp
+void registerPhysicalBoundaryConditions(
+    std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*> un_bc_coefs,
+    std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*> us_bc_coefs);
+```
+
+Registers physical boundary condition objects for both velocity fields. Only periodic and Dirichlet conditions are currently supported.
+
+<Warning>
+  This class does not take ownership of the boundary condition objects. You must manage their lifetime and delete them when finished.
+</Warning>
+
+<ParamField path="un_bc_coefs" type="std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>" required>
+  Robin BC coefficients for the network velocity, one per spatial dimension.
+</ParamField>
+
+<ParamField path="us_bc_coefs" type="std::vector<SAMRAI::solv::RobinBcCoefStrategy<NDIM>*>" required>
+  Robin BC coefficients for the solvent velocity, one per spatial dimension.
+</ParamField>
+
+---
+
+### `registerVolumeFractionBoundaryConditions`
+
+```cpp
+void registerVolumeFractionBoundaryConditions(
+    SAMRAI::solv::RobinBcCoefStrategy<NDIM>* thn_bc_coefs);
+```
+
+Optionally registers boundary conditions for the network volume fraction. Only used when the volume fraction is not an advected quantity. These conditions are ignored at periodic boundaries.
+
+If not set, linear extrapolation is used at physical boundaries.
+
+<ParamField path="thn_bc_coefs" type="SAMRAI::solv::RobinBcCoefStrategy<NDIM>*" required>
+  Robin BC coefficient object for the volume fraction.
+</ParamField>
+
+## Physical parameters
+
+### `setViscosityCoefficient`
+
+```cpp
+void setViscosityCoefficient(double eta_n, double eta_s);
+```
+
+Sets the viscosity coefficients appearing in the viscous stress terms for both phases.
+
+<ParamField path="eta_n" type="double" required>
+  Dynamic viscosity of the network phase.
+</ParamField>
+
+<ParamField path="eta_s" type="double" required>
+  Dynamic viscosity of the solvent phase.
+</ParamField>
+
+---
+
+### `setDragCoefficient`
+
+```cpp
+void setDragCoefficient(double xi, double nu_n, double nu_s);
+```
+
+Sets constant drag coupling coefficients between the two phases.
+
+<ParamField path="xi" type="double" required>
+  Drag coefficient controlling interphase momentum exchange.
+</ParamField>
+
+<ParamField path="nu_n" type="double" required>
+  Normalisation factor for the network phase drag term.
+</ParamField>
+
+<ParamField path="nu_s" type="double" required>
+  Normalisation factor for the solvent phase drag term.
+</ParamField>
+
+---
+
+### `setDragCoefficientFunction`
+
+```cpp
+void setDragCoefficientFunction(
+    SAMRAI::tbox::Pointer<IBTK::CartGridFunction> xi_fcn);
+```
+
+Sets a spatially variable drag coefficient function. Must be called before `initializeHierarchyIntegrator`.
+
+<ParamField path="xi_fcn" type="SAMRAI::tbox::Pointer<IBTK::CartGridFunction>" required>
+  Grid function that evaluates the drag coefficient at each grid point.
+</ParamField>
+
+## Initial conditions
+
+### `setInitialData`
+
+```cpp
+void setInitialData(
+    SAMRAI::tbox::Pointer<IBTK::CartGridFunction> un_fcn,
+    SAMRAI::tbox::Pointer<IBTK::CartGridFunction> us_fcn,
+    SAMRAI::tbox::Pointer<IBTK::CartGridFunction> p_fcn);
+```
+
+Sets initial conditions for the network velocity, solvent velocity, and pressure. Each pointer is set to `nullptr` after it is consumed.
+
+<ParamField path="un_fcn" type="SAMRAI::tbox::Pointer<IBTK::CartGridFunction>" required>
+  Initial condition function for the network velocity **u_n**.
+</ParamField>
+
+<ParamField path="us_fcn" type="SAMRAI::tbox::Pointer<IBTK::CartGridFunction>" required>
+  Initial condition function for the solvent velocity **u_s**.
+</ParamField>
+
+<ParamField path="p_fcn" type="SAMRAI::tbox::Pointer<IBTK::CartGridFunction>" required>
+  Initial condition function for the pressure **p**.
+</ParamField>
+
+---
+
+### `setInitialNetworkVolumeFraction`
+
+```cpp
+void setInitialNetworkVolumeFraction(
+    SAMRAI::tbox::Pointer<IBTK::CartGridFunction> thn_init_fcn);
+```
+
+Sets the initial condition for the network volume fraction **θ_n**.
+
+<ParamField path="thn_init_fcn" type="SAMRAI::tbox::Pointer<IBTK::CartGridFunction>" required>
+  Grid function providing the initial volume fraction field.
+</ParamField>
+
+## Forcing functions
+
+### `setForcingFunctions`
+
+```cpp
+void setForcingFunctions(
+    SAMRAI::tbox::Pointer<IBTK::CartGridFunction> fn_fcn,
+    SAMRAI::tbox::Pointer<IBTK::CartGridFunction> fs_fcn,
+    SAMRAI::tbox::Pointer<IBTK::CartGridFunction> fp_fcn = nullptr);
+```
+
+Registers body force functions for both phases and optionally a pressure forcing term. These functions are **not** scaled by the volume fraction. Any argument may be `nullptr`.
+
+<ParamField path="fn_fcn" type="SAMRAI::tbox::Pointer<IBTK::CartGridFunction>" required>
+  Body force function for the network phase.
+</ParamField>
+
+<ParamField path="fs_fcn" type="SAMRAI::tbox::Pointer<IBTK::CartGridFunction>" required>
+  Body force function for the solvent phase.
+</ParamField>
+
+<ParamField path="fp_fcn" type="SAMRAI::tbox::Pointer<IBTK::CartGridFunction>" default="nullptr">
+  Forcing term added to the pressure (divergence) equation.
+</ParamField>
+
+---
+
+### `setForcingFunctionsScaled`
+
+```cpp
+void setForcingFunctionsScaled(
+    SAMRAI::tbox::Pointer<IBTK::CartGridFunction> fn_fcn,
+    SAMRAI::tbox::Pointer<IBTK::CartGridFunction> fs_fcn);
+```
+
+Registers body force functions that are **scaled by the volume fraction** before being applied. Use this when the supplied forcing already represents a per-phase quantity that must be weighted by **θ_n** or **θ_s = 1 - θ_n**.
+
+<ParamField path="fn_fcn" type="SAMRAI::tbox::Pointer<IBTK::CartGridFunction>" required>
+  Volume-fraction-scaled body force for the network phase.
+</ParamField>
+
+<ParamField path="fs_fcn" type="SAMRAI::tbox::Pointer<IBTK::CartGridFunction>" required>
+  Volume-fraction-scaled body force for the solvent phase.
+</ParamField>
+
+## Volume fraction
+
+### `setNetworkVolumeFractionFunction`
+
+```cpp
+void setNetworkVolumeFractionFunction(
+    SAMRAI::tbox::Pointer<IBTK::CartGridFunction> thn_fcn,
+    bool use_as_initial_condition = true);
+```
+
+Registers a prescribed (non-advected) function for the network volume fraction. If a function is not registered, the volume fraction is advected with the fluid.
+
+<ParamField path="thn_fcn" type="SAMRAI::tbox::Pointer<IBTK::CartGridFunction>" required>
+  Analytic function defining **θ_n** at any point in space and time.
+</ParamField>
+
+<ParamField path="use_as_initial_condition" type="bool" default="true">
+  When `true`, this function also provides the initial condition for **θ_n**. Set to `false` and call `setInitialNetworkVolumeFraction` separately if a different initial field is required.
+</ParamField>
+
+---
+
+### `advectNetworkVolumeFraction`
+
+```cpp
+void advectNetworkVolumeFraction(
+    SAMRAI::tbox::Pointer<IBAMR::AdvDiffHierarchyIntegrator> adv_diff_integrator,
+    bool has_meaningful_mid_value = true);
+```
+
+Configures the integrator to transport **θ_n** with the specified advection–diffusion integrator. Also registers that integrator with the hierarchy.
+
+<ParamField path="adv_diff_integrator" type="SAMRAI::tbox::Pointer<IBAMR::AdvDiffHierarchyIntegrator>" required>
+  Advection–diffusion integrator responsible for evolving the volume fraction.
+</ParamField>
+
+<ParamField path="has_meaningful_mid_value" type="bool" default="true">
+  Set to `false` when the transport scheme (e.g. semi-Lagrangian) does not produce a meaningful intermediate-time value after one evolution step. This affects how the midpoint volume fraction is evaluated during time stepping.
+</ParamField>
+
+## Initialization
+
+### `initializeHierarchyIntegrator`
+
+```cpp
+void initializeHierarchyIntegrator(
+    SAMRAI::tbox::Pointer<SAMRAI::hier::PatchHierarchy<NDIM>> hierarchy,
+    SAMRAI::tbox::Pointer<SAMRAI::mesh::GriddingAlgorithm<NDIM>> gridding_alg) override;
+```
+
+Initialises variables, communication algorithms, solvers, and all other hierarchy-dependent data structures. This method is called automatically by `initializePatchHierarchy` but may also be invoked explicitly before hierarchy construction.
+
+<ParamField path="hierarchy" type="SAMRAI::tbox::Pointer<SAMRAI::hier::PatchHierarchy<NDIM>>" required>
+  The AMR patch hierarchy on which the integrator will operate.
+</ParamField>
+
+<ParamField path="gridding_alg" type="SAMRAI::tbox::Pointer<SAMRAI::mesh::GriddingAlgorithm<NDIM>>" required>
+  Gridding algorithm used for AMR refinement and coarsening.
+</ParamField>
+
+## Usage example
+
+The following is taken from `frm/four_roll_mill.cpp` and shows a complete setup sequence.
+
+```cpp
+#include "multiphase/MultiphaseStaggeredHierarchyIntegrator.h"
+#include <ibamr/AdvDiffSemiImplicitHierarchyIntegrator.h>
+#include <ibtk/muParserCartGridFunction.h>
+
+using namespace multiphase;
+
+// 1. Create the integrator
+Pointer<MultiphaseStaggeredHierarchyIntegrator> ins_integrator =
+    new MultiphaseStaggeredHierarchyIntegrator(
+        "FluidSolver",
+        app_initializer->getComponentDatabase("INSVCTwoFluidStaggeredHierarchyIntegrator"),
+        grid_geometry,
+        true /*register_for_restart*/);
+
+// 2. Create the advection–diffusion integrator for the volume fraction
+Pointer<AdvDiffSemiImplicitHierarchyIntegrator> adv_diff_integrator =
+    new AdvDiffSemiImplicitHierarchyIntegrator(
+        "AdvDiffIntegrator",
+        app_initializer->getComponentDatabase("AdvDiffIntegrator"),
+        true /*register_for_restart*/);
+
+// 3. Set physical parameters
+const double eta_n = input_db->getDouble("ETA_N");
+const double eta_s = input_db->getDouble("ETA_S");
+const double xi    = input_db->getDouble("XI");
+const double nu_n  = input_db->getDouble("NU_N");
+const double nu_s  = input_db->getDouble("NU_S");
+ins_integrator->setViscosityCoefficient(eta_n, eta_s);
+ins_integrator->setDragCoefficient(xi, nu_n, nu_s);
+
+// 4. Set initial conditions
+Pointer<CartGridFunction> un_init =
+    new muParserCartGridFunction("un", app_initializer->getComponentDatabase("un"), grid_geometry);
+Pointer<CartGridFunction> us_init =
+    new muParserCartGridFunction("us", app_initializer->getComponentDatabase("us"), grid_geometry);
+Pointer<CartGridFunction> p_init  =
+    new muParserCartGridFunction("p",  app_initializer->getComponentDatabase("p"),  grid_geometry);
+ins_integrator->setInitialData(un_init, us_init, p_init);
+
+// 5. Set up and advect the network volume fraction
+Pointer<CartGridFunction> thn_init_fcn =
+    new muParserCartGridFunction("thn_init", app_initializer->getComponentDatabase("thn"), grid_geometry);
+ins_integrator->setInitialNetworkVolumeFraction(thn_init_fcn);
+ins_integrator->advectNetworkVolumeFraction(adv_diff_integrator);
+
+// 6. Register scaled body forces
+Pointer<CartGridFunction> fn_fcn =
+    new muParserCartGridFunction("FN_FCN", app_initializer->getComponentDatabase("FN_FCN"), grid_geometry);
+Pointer<CartGridFunction> fs_fcn =
+    new muParserCartGridFunction("FS_FCN", app_initializer->getComponentDatabase("FS_FCN"), grid_geometry);
+ins_integrator->setForcingFunctionsScaled(fn_fcn, fs_fcn);
+
+// 7. Initialize the patch hierarchy
+ins_integrator->initializePatchHierarchy(patch_hierarchy, gridding_algorithm);
+
+// 8. Time step loop
+while (!IBTK::rel_equal_eps(loop_time, time_end) && ins_integrator->stepsRemaining())
+{
+    double dt = ins_integrator->getMaximumTimeStepSize();
+    ins_integrator->advanceHierarchy(dt);
+    loop_time += dt;
+}
+```

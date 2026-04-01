@@ -1,97 +1,70 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "AMR Multiphase Fluid Solver"
+description: "A C++ library for simulating two-phase viscoelastic mixture flows on adaptively refined grids with second-order accuracy."
 ---
 
-## Setting up
+AMR Multiphase is a high-performance C++ solver for incompressible two-phase fluid flows. It uses Adaptive Mesh Refinement (AMR) to efficiently resolve sharp gradients in the solution — automatically refining grids where needed and coarsening them elsewhere. The solver supports both Newtonian and non-Newtonian (viscoelastic Oldroyd-B) fluid models, and is second-order accurate in $L^1$, $L^2$, and $L^\infty$ norms.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Build & Install" icon="wrench" href="/building">
+    Install dependencies and compile the library with CMake
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run your first multiphase simulation in minutes
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Concepts" icon="book" href="/concepts/multiphase-model">
+    Understand the physical model and numerical methods
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/multiphase-staggered-hierarchy-integrator">
+    Explore the full C++ API surface
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What this library solves
 
-Everything you need to create world-class documentation.
+AMR Multiphase implements a staggered-grid (MAC) discretization of the incompressible two-fluid mixture equations. Each fluid phase — a **network** phase and a **solvent** phase — carries its own velocity field and volume fraction. The two phases interact through a drag coupling term.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
+<CardGroup cols={2}>
+  <Card title="Multiphase model" icon="droplets" href="/concepts/multiphase-model">
+    The two-fluid mixture equations and physical parameters
   </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
+  <Card title="Adaptive Mesh Refinement" icon="layer-group" href="/concepts/amr">
+    How AMR reduces cost by focusing resolution where it matters
   </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
+  <Card title="Numerical methods" icon="calculator" href="/concepts/numerical-methods">
+    Staggered-grid discretization, time stepping, and the multigrid preconditioner
   </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
+  <Card title="Viscoelastic fluids" icon="flask" href="/concepts/viscoelastic-fluids">
+    The Oldroyd-B conformation tensor model for non-Newtonian flows
   </Card>
-</Columns>
+</CardGroup>
 
-## Need inspiration?
+## Getting started
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Build IBAMR and dependencies">
+    Install [IBAMR](https://ibamr.github.io/building) and its dependencies. You can use [autoibamr](https://github.com/ibamr/autoibamr) for an automated build.
+  </Step>
+  <Step title="Compile the library">
+    Configure with CMake pointing to your IBAMR installation, then build the `MultiphaseLib` target and any example executables.
+  </Step>
+  <Step title="Configure your simulation">
+    Create an input file specifying grid geometry, fluid parameters, time stepping settings, and solver configuration.
+  </Step>
+  <Step title="Run and visualize">
+    Execute the compiled binary with your input file. Visualize results with [VisIt](https://visit-dav.github.io/visit-website/).
+  </Step>
+</Steps>
+
+## Key features
+
+- **Second-order accuracy** — verified in $L^1$, $L^2$, and $L^\infty$ norms for all solution variables
+- **Adaptive Mesh Refinement** — gradient-based tagging automatically refines near sharp interfaces
+- **Multigrid preconditioner** — efficient FAC preconditioner solves the coupled saddle-point system
+- **Viscoelastic support** — Oldroyd-B conformation tensor model via the `CFMultiphaseOldroydB` strategy
+- **Multiple limiters** — UPWIND, CUI, FBICS, and MGAMMA convective operator limiters
+- **Parallel-ready** — built on IBAMR/SAMRAI/PETSc for MPI-parallel computation
+
+<Note>
+For full mathematical details and simulation results, see the companion paper: [Adaptive Mesh Refinement for Two-Phase Viscoelastic Fluid Mixture Models](https://arxiv.org/abs/2409.19974).
+</Note>

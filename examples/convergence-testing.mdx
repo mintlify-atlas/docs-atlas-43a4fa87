@@ -1,0 +1,136 @@
+---
+title: "Convergence testing"
+description: "Verify second-order accuracy of the solver by comparing coarse and fine hierarchy solutions."
+---
+
+The convergence tester compares the solution from two runs at different resolutions and reports L1, L2, and L∞ error norms for all solution variables. This is used to confirm that the solver achieves second-order accuracy in all norms for the Newtonian and viscoelastic models.
+
+## CMake target
+
+| Target | Source file |
+|---|---|
+| `frm_convergence` | `frm/convergence_tester.cpp` |
+
+```bash
+make frm_convergence
+```
+
+## How it works
+
+The convergence tester is a post-processing program. It does **not** run the simulation itself — it reads the hierarchy data files written by two separate `frm` runs and computes the difference between them.
+
+<Steps>
+  <Step title="Run the coarse simulation">
+    Edit `input2d` so the data dump interval is set to 1 and the `data_dump_dirname` is pointing to a known directory. Run `frm` at the coarse resolution (e.g. `N = 32`):
+
+    ```bash
+    cd frm
+    ./frm input2d \
+        -solver_ksp_rtol 1e-14 \
+        -solver_ksp_type fgmres
+    ```
+
+    This writes hierarchy data files to `hier_data_four_roll_mill/`.
+  </Step>
+  <Step title="Run the fine simulation">
+    Double the resolution (`N = 64`) and also double the number of time steps so both runs reach the same end time. Run `frm` again and write to a separate directory (set `data_dump_dirname` to `hier_data_IB2d_fine` or similar).
+  </Step>
+  <Step title="Run the convergence tester">
+    Pass the convergence input file on the command line:
+
+    ```bash
+    ./frm_convergence input2d.convergence
+    ```
+
+    The tester reads the coarse and fine hierarchy files, coarsens the fine solution onto the coarse grid, and computes the difference.
+  </Step>
+</Steps>
+
+## Input file: `input2d.convergence`
+
+```text
+L = 1.0
+MAX_LEVELS = 1
+REF_RATIO  = 2
+N = 32
+
+Main {
+   coarse_hier_dump_dirname = "hier_data_IB2d_coarse"
+   fine_hier_dump_dirname   = "hier_data_IB2d_fine"
+
+   coarse_iter_num = 1000
+   fine_iter_num   = 2000
+
+   log_file_name   = "convergence.log"
+
+   viz_dump_dirname            = "convergence_viz"
+   data_dump_dirname           = "hier_data_IB2d"
+}
+
+CartesianGeometry {
+   domain_boxes      = [ (0,0),(N - 1,N - 1) ]
+   x_lo              = -0.5,-0.5
+   x_up              =  0.5, 0.5
+   periodic_dimension = 1,1
+}
+```
+
+`coarse_iter_num` and `fine_iter_num` specify which iteration snapshots to compare. The tester asserts that both snapshots correspond to the same simulation time before computing error norms.
+
+## Variables reported
+
+The convergence tester computes and prints L1, L2, and max norms for each solution variable:
+
+| Variable | Description |
+|---|---|
+| `FluidSolver::thn_cc` | Network volume fraction |
+| `FluidSolver::un_sc` | Network velocity |
+| `FluidSolver::us_sc` | Solvent velocity |
+| `FluidSolver::P` | Pressure |
+| `Sxx`, `Syy`, `Sxy` | Conformation tensor components (viscoelastic runs) |
+
+Example output from `convergence_tester.cpp`:
+
+```text
+Error in FluidSolver::thn_cc at time 0.1:
+  L1-norm:  ...
+  L2-norm:  ...
+  max-norm: ...
+
+Error in FluidSolver::un_sc at time 0.1:
+  L1-norm:  ...
+  L2-norm:  ...
+  max-norm: ...
+
+Error in FluidSolver::us_sc at time 0.1:
+  L1-norm:  ...
+  L2-norm:  ...
+  max-norm: ...
+
+Error in FluidSolver::P at time 0.1:
+  L1-norm:  ...
+  L2-norm:  ...
+  max-norm: ...
+```
+
+<Note>
+Expected convergence rates for the Newtonian and non-Newtonian models are reported in the paper: [Adaptive Mesh Refinement for Two-Phase Viscoelastic Fluid Mixture Models](https://arxiv.org/abs/2409.19974). The solver is demonstrated to be second-order accurate in L1, L2, and L∞ norms for all solution variables.
+</Note>
+
+## How the error is computed
+
+The program implements a grid transfer convergence study:
+
+1. **Coarsen the fine hierarchy** — the fine-grid solution is conservatively coarsened by a factor of 2 onto a hierarchy that matches the coarse grid.
+2. **Interpolate back** — the coarsened-fine solution is interpolated onto the coarse patch hierarchy using `CONSERVATIVE_LINEAR_REFINE` for side-centered velocities and `LINEAR_REFINE` for cell-centered quantities.
+3. **Subtract** — the interpolated fine solution is subtracted from the coarse solution on each level.
+4. **Compute norms** — weighted L1, L2, and max norms are computed using the SAMRAI hierarchy data operations.
+
+This approach avoids the need for a known analytical solution; the fine-grid solution acts as a reference.
+
+## Visualization
+
+The convergence tester writes two VisIt snapshots to `convergence_viz/`:
+
+- Snapshot 0: solution fields before differencing (for visual inspection)
+- Snapshot 1: error fields after differencing (for visualizing the spatial distribution of the error)

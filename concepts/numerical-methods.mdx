@@ -1,0 +1,146 @@
+---
+title: "Numerical methods"
+description: "Staggered-grid (MAC) discretization, time-stepping schemes, the saddle-point linear system, and the FAC multigrid preconditioner."
+---
+
+The solver uses a staggered-grid (MAC) finite-difference discretization on the AMR patch hierarchy. The resulting linear system at each time step is a saddle-point problem solved by FGMRES preconditioned with a Full Approximation Cycle (FAC) multigrid method.
+
+The solver is second-order accurate in the $L^1$, $L^2$, and $L^\infty$ norms for all solution variables, verified for both the Newtonian and Oldroyd-B models.
+
+## Staggered-grid (MAC) layout
+
+Variables are not all located at the same grid points. The **Marker-and-Cell (MAC)** layout places each variable where it is most naturally discretized:
+
+| Variable | Location | Description |
+|----------|----------|-------------|
+| $\mathbf{u}_n$, $\mathbf{u}_s$ | **Side-centered** (face centers) | Network and solvent velocities; each component lives on the face normal to that direction |
+| $p$ | **Cell-centered** | Pressure, shared Lagrange multiplier for the incompressibility constraint |
+| $\theta_n$ | **Cell-centered** | Network volume fraction |
+
+This placement is the standard MAC grid used in incompressible flow solvers. It avoids the pressure-velocity decoupling (checkerboard modes) that can arise with collocated grids, and it yields natural discrete divergence and gradient operators that are exact adjoints of each other.
+
+<Info>
+On the AMR hierarchy, the staggered data lives on side-centered patch data (`SideVariable`) for velocities and cell-centered patch data (`CellVariable`) for pressure and volume fraction.
+</Info>
+
+## Time stepping
+
+### Viscous terms: trapezoidal rule
+
+Viscous stresses are integrated with the **trapezoidal rule** (Crank-Nicolson), which is second-order accurate in time and unconditionally stable for the linear viscous terms:
+
+```text input2d
+VISCOUS_TS_TYPE = "TRAPEZOIDAL_RULE"
+```
+
+This means the viscous operator is evaluated at the average of the current and new time levels, leading to an implicit system that must be solved at each step.
+
+### Convective terms: Adams-Bashforth
+
+Nonlinear convective terms are handled explicitly using a second-order **Adams-Bashforth** extrapolation:
+
+```text input2d
+ADV_DIFF_CONVECTIVE_TS_TYPE = "ADAMS_BASHFORTH"
+```
+
+Adams-Bashforth uses information from the current and previous time steps to extrapolate the convective operator to the new time level without requiring iteration. The previous-time convective values are stored in `d_Nn_old_var` and `d_Ns_old_var`.
+
+### Convective limiters
+
+The convective operator supports several flux limiters to suppress oscillations near sharp gradients:
+
+| Limiter | Description |
+|---------|-------------|
+| `UPWIND` | First-order upwind; most diffusive, most stable |
+| `CUI` | Cubic Upwind Interpolation; second-order, good accuracy |
+| `FBICS` | Flux-Based Interpolation with Compact Stencil |
+| `MGAMMA` | Monotone GAMMA limiter |
+
+The `frm/input2d` example uses CUI for the advection-diffusion integrator:
+
+```text input2d
+ADV_DIFF_CONVECTIVE_OP_TYPE    = "CUI"
+ADV_DIFF_CONVECTIVE_FORM       = "CONSERVATIVE"
+```
+
+## CFL stability condition
+
+The explicit Adams-Bashforth treatment of convection requires the time step to satisfy the **CFL condition** for stability. The maximum stable time step is:
+
+$$
+\Delta t_\text{max} = \text{CFL}_\text{max} \cdot \frac{\Delta x}{U_\text{max}}
+$$
+
+In `frm/input2d`:
+
+```text input2d
+N       = 64
+DX      = 1.0 / N
+U_MAX   = 20.0
+CFL_MAX = 0.1
+DT_MAX  = CFL_MAX * DX / U_MAX
+```
+
+<Warning>
+Setting `CFL_MAX` too large (above ~0.5 for most limiters) can cause instability. The example uses a conservative value of 0.1. Always verify stability for your specific velocity magnitudes and grid spacing.
+</Warning>
+
+## The saddle-point linear system
+
+After discretizing in time, the equations at each time step form a **saddle-point system**:
+
+$$
+\begin{bmatrix} \mathbf{A} & \mathbf{B}^T \\ \mathbf{B} & 0 \end{bmatrix}
+\begin{bmatrix} \mathbf{u} \\ p \end{bmatrix}
+=
+\begin{bmatrix} \mathbf{f} \\ g \end{bmatrix}
+$$
+
+where $\mathbf{A}$ contains the viscous and drag terms for both phases, $\mathbf{B}^T$ contains the volume-fraction-weighted gradient, and $\mathbf{B}$ contains the divergence constraint. The full block structure is described in [Multiphase model](/concepts/multiphase-model).
+
+The system is solved with **FGMRES** (Flexible GMRES), a Krylov method suitable for non-symmetric and variable-preconditioned systems:
+
+```text input2d
+solver_db {
+   ksp_type = "fgmres"
+}
+```
+
+## FAC multigrid preconditioner
+
+FGMRES converges slowly without preconditioning on the saddle-point system. The solver uses a **Full Approximation Cycle (FAC)** multigrid preconditioner implemented in `FullFACPreconditioner` with a box-relaxation smoother from `MultiphaseStaggeredStokesBoxRelaxationFACOperator`.
+
+FAC multigrid exploits the AMR hierarchy directly: the coarse grid levels serve as the coarse-grid correction hierarchy, avoiding the need to construct a separate multigrid hierarchy.
+
+The preconditioner is configured via the `precond_db` block:
+
+```text input2d
+precond_db {
+   cycle_type           = "V_CYCLE"
+   num_pre_sweeps       = 5
+   num_post_sweeps      = 5
+   enable_logging       = TRUE
+   max_multigrid_levels = 6
+}
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `cycle_type` | Multigrid cycle type. `V_CYCLE` is a standard V-cycle (one downstroke and one upstroke). |
+| `num_pre_sweeps` | Number of smoother iterations before the coarse-grid correction. |
+| `num_post_sweeps` | Number of smoother iterations after the coarse-grid correction. |
+| `max_multigrid_levels` | Maximum number of levels used inside the preconditioner. |
+
+<Tip>
+The relaxation weight `W = 0.75` in the example input controls the under-relaxation of the box smoother. Reducing it below 1.0 improves robustness for problems with large viscosity contrasts between phases.
+</Tip>
+
+## Second-order accuracy
+
+The combination of:
+
+- Staggered-grid spatial discretization (second-order centered differences),
+- Trapezoidal rule for viscous terms (second-order in time), and
+- Adams-Bashforth for convective terms (second-order in time)
+
+yields a solver that is second-order accurate in space and time. This is verified in the companion paper via convergence studies in the $L^1$, $L^2$, and $L^\infty$ norms across all solution variables ($\mathbf{u}_n$, $\mathbf{u}_s$, $p$, $\theta_n$) for both Newtonian and viscoelastic configurations.

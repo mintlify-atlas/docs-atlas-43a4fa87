@@ -1,0 +1,108 @@
+---
+title: "Build & install"
+description: "Install dependencies and compile the AMR Multiphase library and example executables with CMake."
+---
+
+## Prerequisites
+
+AMR Multiphase is built on top of [IBAMR](https://ibamr.github.io/building), a framework for developing fluid-structure interaction codes on block-structured AMR grids. You must install IBAMR and all of its required dependencies before compiling this library.
+
+<Note>
+IBAMR must be compiled with CMake. AMR Multiphase is not compatible with IBAMR builds that use autoconf.
+</Note>
+
+The table below lists the three dependencies you need before building.
+
+| Dependency | Purpose | Install guide |
+|---|---|---|
+| IBAMR | Core AMR framework, staggered-grid solvers, and PETSc/SAMRAI integration | [ibamr.github.io/building](https://ibamr.github.io/building) |
+| autoibamr | Optional automated script to build IBAMR and all its dependencies in one step | [github.com/ibamr/autoibamr](https://github.com/ibamr/autoibamr) |
+| VisIt | Post-processing and visualization of simulation output | [visit-dav.github.io/visit-website](https://visit-dav.github.io/visit-website/) |
+
+<Tip>
+Unless you intend to actively develop IBAMR itself, build an optimized release of IBAMR and its dependencies. Using `-O3 -march=native` at the IBAMR build stage significantly reduces simulation runtimes.
+</Tip>
+
+## Compiling the library
+
+<Steps>
+  <Step title="Create a build directory">
+    From the root of the repository, create a `build` directory. This keeps all object files, CMake cache files, and compiled executables separate from the source tree.
+
+    ```bash
+    mkdir build
+    ```
+  </Step>
+
+  <Step title="Configure with CMake">
+    Enter the build directory and run `cmake`, pointing it at your IBAMR installation. For best performance, pass the optimization flags `-O3 -march=native`.
+
+    ```bash
+    cd build
+    cmake .. \
+        -DIBAMR_ROOT=/path/to/ibamr/install/dir \
+        -DCMAKE_CXX_FLAGS="-O3 -march=native"
+    ```
+
+    Replace `/path/to/ibamr/install/dir` with the actual prefix you used when installing IBAMR (the directory that contains `lib/cmake/IBAMR/`).
+
+    <Warning>
+    The `-march=native` flag generates code optimized for the CPU on your build machine. Do not use it if you intend to copy the binaries to a different machine with a different CPU architecture.
+    </Warning>
+  </Step>
+
+  <Step title="Build a target">
+    Run `make` with the name of the target you want to compile. For example, to build the four-roll-mill example:
+
+    ```bash
+    make frm
+    ```
+
+    CMake first builds the `MultiphaseLib` static library (if not already built), then links the requested executable against it.
+  </Step>
+</Steps>
+
+## Available build targets
+
+The root `CMakeLists.txt` defines `MultiphaseLib` and includes four example subdirectories, each with its own targets.
+
+| Target | Subdirectory | Description |
+|---|---|---|
+| `frm` | `frm/` | Four-roll-mill example — the primary validation case |
+| `frm_convergence` | `frm/` | Convergence tester for the four-roll-mill problem |
+| `smooth` | `smooth/` | Smoother validation example |
+| `convective_op` | `convective_op/` | Convective operator tests |
+| `bc_solve` | `physical_bc/solve/` | Physical boundary condition solver example |
+| `channel` | `physical_bc/channel/` | Channel flow example with physical BCs |
+| `bc_apply` | `physical_bc/apply/` | Boundary condition application test |
+
+To build all targets at once, run `make` without arguments from the `build` directory.
+
+## Library source files
+
+`MultiphaseLib` is compiled from the following source files under `src/`:
+
+```
+src/CFMultiphaseOldroydB.cpp
+src/FullFACPreconditioner.cpp
+src/MultiphaseConvectiveManager.cpp
+src/MultiphaseStaggeredHierarchyIntegrator.cpp
+src/MultiphaseStaggeredStokesBoxRelaxationFACOperator.cpp
+src/MultiphaseStaggeredStokesOperator.cpp
+src/RBGS.f
+```
+
+Public headers are installed from the `include/` directory and are available to downstream targets via the `MultiphaseLib` CMake target.
+
+## Optimized builds
+
+For production simulations, use the following CMake invocation:
+
+```bash
+cmake .. \
+    -DIBAMR_ROOT=/path/to/ibamr/install/dir \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_FLAGS="-O3 -march=native"
+```
+
+This enables the compiler to apply loop vectorization, inlining, and hardware-specific SIMD instructions. Observed speedups over a debug build are typically 3–10× for compute-intensive simulation runs.

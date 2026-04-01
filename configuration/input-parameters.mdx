@@ -1,0 +1,339 @@
+---
+title: "Input parameters"
+description: "Reference for all parameters in the simulation input file, including grid setup, fluid properties, initial conditions, and output controls."
+---
+
+The solver reads configuration from a plain-text input file passed as the first command-line argument. The format uses a key-value syntax with support for arithmetic expressions and named sub-blocks. Values defined earlier in the file can be referenced by name in later expressions.
+
+```text
+executable input2d
+```
+
+## Complete annotated example
+
+The following snippet covers a typical 2D periodic simulation. See the sub-sections below for a full description of each parameter.
+
+```text input2d
+// ── Simulation parameters ──────────────────────────────────────────────────
+USE_PRECONDITIONER = TRUE
+RHO = 1.0
+N = 64
+MAX_MULTIGRID_LEVELS = 6
+START_TIME = 0.0
+END_TIME   = 1.0
+NUM_CYCLES = 1
+DX         = 1.0 / N
+U_MAX      = 20.0
+CFL_MAX    = 0.1
+DT_MAX     = CFL_MAX * DX / U_MAX
+ENABLE_LOGGING = TRUE
+W = 0.75
+VIZ_DUMP_TIME_INTERVAL = 0.005
+DELTA          = 0.175
+TAG_BUFFER     = 1
+REGRID_INTERVAL = 10
+
+// ── Advection–diffusion (volume fraction transport) ────────────────────────
+ADV_DIFF_NUM_CYCLES       = 1
+ADV_DIFF_CONVECTIVE_OP_TYPE  = "CUI"
+ADV_DIFF_CONVECTIVE_TS_TYPE  = "ADAMS_BASHFORTH"
+ADV_DIFF_CONVECTIVE_FORM     = "CONSERVATIVE"
+
+// ── Viscoelastic model (disabled here) ────────────────────────────────────
+USE_CF = FALSE
+VISCOUS_TS_TYPE = "TRAPEZOIDAL_RULE"
+HAS_VEL_NULLSPACE = FALSE
+
+// ── Fluid parameters ───────────────────────────────────────────────────────
+ETA_S = 0.04
+ETA_N = 4.0
+NU_N  = 1.0
+NU_S  = 1.0
+XI    = 250.0 * ETA_S
+
+// ── Initial conditions ─────────────────────────────────────────────────────
+un { function_0 = "0.0"  function_1 = "0.0" }
+us { function_0 = "0.0"  function_1 = "0.0" }
+p  { function   = "0.0" }
+
+thn {
+   delta    = DELTA
+   function = "0.25 + 0.25*((sqrt(X_0*X_0+X_1*X_1)<delta) ? (...) : 0.0)"
+}
+
+// ── Integrator block ───────────────────────────────────────────────────────
+INSVCTwoFluidStaggeredHierarchyIntegrator {
+   rho            = RHO
+   start_time     = START_TIME
+   end_time       = END_TIME
+   num_cycles     = NUM_CYCLES
+   dt_max         = DT_MAX
+   enable_logging = ENABLE_LOGGING
+   w              = W
+   use_preconditioner = USE_PRECONDITIONER
+   grad_abs_thresh    = 0.75
+   use_grad_tagging   = TRUE
+   tag_buffer         = TAG_BUFFER
+   regrid_interval    = REGRID_INTERVAL
+
+   solver_db  { ksp_type = "fgmres" }
+   precond_db {
+      cycle_type         = "V_CYCLE"
+      num_pre_sweeps     = 5
+      num_post_sweeps    = 5
+      enable_logging     = TRUE
+      max_multigrid_levels = MAX_MULTIGRID_LEVELS
+   }
+}
+
+// ── Cartesian geometry ─────────────────────────────────────────────────────
+CartesianGeometry {
+   domain_boxes       = [(0,0), (N - 1, N - 1)]
+   x_lo               = -0.5, -0.5
+   x_up               =  0.5,  0.5
+   periodic_dimension =  1, 1
+}
+
+// ── Gridding algorithm ─────────────────────────────────────────────────────
+GriddingAlgorithm {
+   max_levels = 3
+   ratio_to_coarser {
+      level_1 = 2, 2
+      level_2 = 2, 2
+      level_3 = 2, 2
+   }
+   largest_patch_size  { level_0 = 512, 512 }
+   smallest_patch_size { level_0 =   4,   4 }
+   efficiency_tolerance = 0.70e0
+   combine_efficiency   = 0.85e0
+}
+```
+
+---
+
+## Simulation parameters
+
+Top-level scalars that control the overall simulation run.
+
+<ParamField path="RHO" type="number" required>
+  Fluid density shared by both phases. Used directly by `INSVCTwoFluidStaggeredHierarchyIntegrator`.
+</ParamField>
+
+<ParamField path="N" type="integer" required>
+  Number of grid cells along each axis on the coarsest level. The actual mesh spacing is `DX = L / N` where `L` is the domain side length.
+</ParamField>
+
+<ParamField path="MAX_MULTIGRID_LEVELS" type="integer" default="6">
+  Maximum number of multigrid levels used by the FAC preconditioner. Referenced inside `precond_db`. Values of 5–7 are typical; larger values reduce cost on fine grids but require more setup.
+</ParamField>
+
+<ParamField path="START_TIME" type="number" default="0.0">
+  Simulation start time passed to the integrator and advection–diffusion solver.
+</ParamField>
+
+<ParamField path="END_TIME" type="number" required>
+  Simulation end time. The main loop advances until `loop_time` reaches this value.
+</ParamField>
+
+<ParamField path="NUM_CYCLES" type="integer" default="1">
+  Number of predictor–corrector cycles per time step. Increasing this improves temporal accuracy at extra cost per step.
+</ParamField>
+
+<ParamField path="CFL_MAX" type="number" default="0.1">
+  Maximum CFL number. Used together with `U_MAX` and `DX` to derive `DT_MAX = CFL_MAX * DX / U_MAX`.
+</ParamField>
+
+<ParamField path="DT_MAX" type="number" required>
+  Maximum allowed time step size. Can be set directly or derived from `CFL_MAX`, `DX`, and `U_MAX`. The integrator may take smaller steps to satisfy stability constraints.
+</ParamField>
+
+<ParamField path="U_MAX" type="number">
+  Expected maximum velocity magnitude. Used only for computing `DT_MAX` via the CFL condition. Set conservatively to avoid excessively large time steps.
+</ParamField>
+
+<ParamField path="ENABLE_LOGGING" type="boolean" default="TRUE">
+  Enable solver logging output. Passed to both the fluid integrator and the advection–diffusion integrator.
+</ParamField>
+
+<ParamField path="W" type="number" default="0.75">
+  Relaxation weight for the box-relaxation smoother inside the FAC preconditioner. Values between 0.5 and 1.0 are typical. Tune this together with `num_pre_sweeps` and `num_post_sweeps` if convergence is slow.
+</ParamField>
+
+<ParamField path="USE_PRECONDITIONER" type="boolean" default="TRUE">
+  Enable the FAC multigrid preconditioner. Disabling this falls back to an unpreconditioned Krylov solve, which is significantly slower for large problems.
+</ParamField>
+
+<ParamField path="VIZ_DUMP_TIME_INTERVAL" type="number">
+  Physical time interval between visualization output files. VisIt dump files are written whenever `loop_time` reaches the next multiple of this interval.
+</ParamField>
+
+<ParamField path="TAG_BUFFER" type="integer" default="1">
+  Number of buffer cells added around tagged regions when generating refined patches. Increasing this produces larger refined patches and reduces regridding frequency.
+</ParamField>
+
+<ParamField path="REGRID_INTERVAL" type="integer" default="10">
+  Number of time steps between regridding operations. Lower values track moving interfaces more closely; higher values reduce overhead.
+</ParamField>
+
+---
+
+## Fluid parameters
+
+Physical coefficients for the network (n) and solvent (s) phases.
+
+<ParamField path="ETA_S" type="number" required>
+  Dynamic viscosity of the solvent phase. Appears in the viscous stress term for the solvent momentum equation.
+</ParamField>
+
+<ParamField path="ETA_N" type="number" required>
+  Dynamic viscosity of the network phase. Appears in the viscous stress term for the network momentum equation.
+</ParamField>
+
+<ParamField path="NU_N" type="number" default="1.0">
+  Drag scaling factor for the network phase. Scales the drag force on the network: `f_drag = xi * nu_n * (us - un)`.
+</ParamField>
+
+<ParamField path="NU_S" type="number" default="1.0">
+  Drag scaling factor for the solvent phase. Scales the drag force on the solvent: `f_drag = xi * nu_s * (un - us)`.
+</ParamField>
+
+<ParamField path="XI" type="number" required>
+  Drag coefficient controlling momentum exchange between the two phases. Larger values enforce tighter velocity coupling. A common choice is `250.0 * ETA_S`.
+</ParamField>
+
+<ParamField path="USE_CF" type="boolean" default="FALSE">
+  Enable the viscoelastic (complex fluid) Oldroyd-B model. When `TRUE`, a `CFINSForcing` block must also be present to configure the conformation tensor evolution. See the `input2d.cf.relax` example for a complete viscoelastic setup.
+</ParamField>
+
+<Note>
+  `XI` can also be provided as a spatially varying field by calling `setDragCoefficientFunction` in C++ code rather than setting the scalar in the input file.
+</Note>
+
+---
+
+## Initial condition functions
+
+The blocks `un`, `us`, `p`, and `thn` specify initial data using [muParser](https://beltoforion.de/en/muparser/) expression strings. Variables `X_0` and `X_1` represent the spatial coordinates; `t` represents the current simulation time.
+
+<ParamField path="un" type="object" required>
+  Initial network-phase velocity. Each component is a separate key:
+  - `function_0` — x-component
+  - `function_1` — y-component (2D) or y-component (3D)
+  - `function_2` — z-component (3D only)
+</ParamField>
+
+<ParamField path="us" type="object" required>
+  Initial solvent-phase velocity. Same structure as `un`.
+</ParamField>
+
+<ParamField path="p" type="object" required>
+  Initial pressure field. Uses a single `function` key.
+</ParamField>
+
+<ParamField path="thn" type="object" required>
+  Initial network volume fraction field. Uses a single `function` key. The value must remain in `[0, 1]`.
+
+  An optional `delta` sub-key can be referenced inside the expression string and is set as a local variable before parsing:
+
+  ```text
+  thn {
+     delta    = 0.175
+     function = "0.25 + 0.25*((sqrt(X_0*X_0+X_1*X_1)<delta) ? 1.0 : 0.0)"
+  }
+  ```
+</ParamField>
+
+<Tip>
+  muParser supports standard math functions (`sin`, `cos`, `sqrt`, `exp`, `log`), the constant `PI`, arithmetic operators, and the ternary operator `(condition ? a : b)`. Use `^` for exponentiation. Spatial coordinates are accessed as `X_0`, `X_1`, and (in 3D) `X_2`.
+</Tip>
+
+The forcing function blocks `FN_FCN` and `FS_FCN` follow the same component-based syntax and are optionally time-dependent:
+
+```text
+FN_FCN {
+   function_0 = "(t < 0.34) ? (2*PI*sin(2*PI*X_0)*cos(2*PI*X_1)) : 0.0"
+   function_1 = "(t < 0.34) ? (2*PI*cos(2*PI*X_0)*sin(2*PI*X_1)) : 0.0"
+}
+```
+
+---
+
+## INSVCTwoFluidStaggeredHierarchyIntegrator block
+
+This sub-block configures the main fluid integrator. The block name must be `INSVCTwoFluidStaggeredHierarchyIntegrator` and is passed verbatim to `MultiphaseStaggeredHierarchyIntegrator` during construction.
+
+<ParamField path="INSVCTwoFluidStaggeredHierarchyIntegrator.rho" type="number" required>
+  Fluid density. Should match the top-level `RHO` scalar.
+</ParamField>
+
+<ParamField path="INSVCTwoFluidStaggeredHierarchyIntegrator.viscous_time_stepping_type" type="string" default="TRAPEZOIDAL_RULE">
+  Time-stepping scheme for the viscous terms. `TRAPEZOIDAL_RULE` (Crank–Nicolson) is required for second-order accuracy.
+</ParamField>
+
+<ParamField path="INSVCTwoFluidStaggeredHierarchyIntegrator.use_grad_tagging" type="boolean" default="TRUE">
+  Enable gradient-based cell tagging for AMR refinement. When `TRUE`, cells where the volume-fraction gradient exceeds `grad_abs_thresh` are tagged for refinement.
+</ParamField>
+
+<ParamField path="INSVCTwoFluidStaggeredHierarchyIntegrator.grad_abs_thresh" type="number">
+  Absolute gradient threshold for tagging cells. Can be a single scalar or a comma-separated list of per-level thresholds, e.g. `1.0, 4.0, 6.0`.
+</ParamField>
+
+<ParamField path="INSVCTwoFluidStaggeredHierarchyIntegrator.convec_limiter_type" type="string">
+  Convective limiter for the momentum equations. Supported values: `UPWIND`, `CUI`, `FBICS`, `MGAMMA`. Defaults to the scheme configured in `AdvDiffIntegrator` if not set here.
+</ParamField>
+
+---
+
+## CartesianGeometry block
+
+Defines the computational domain on a uniform Cartesian background mesh.
+
+<ParamField path="CartesianGeometry.domain_boxes" type="string" required>
+  Index space extents of the coarsest-level domain, e.g. `[(0,0), (N-1, N-1)]` for a 2D N×N grid.
+</ParamField>
+
+<ParamField path="CartesianGeometry.x_lo" type="number[]" required>
+  Lower corner of the physical domain in each coordinate direction, e.g. `-0.5, -0.5`.
+</ParamField>
+
+<ParamField path="CartesianGeometry.x_up" type="number[]" required>
+  Upper corner of the physical domain in each coordinate direction, e.g. `0.5, 0.5`.
+</ParamField>
+
+<ParamField path="CartesianGeometry.periodic_dimension" type="integer[]" required>
+  Periodicity flag for each spatial dimension. Use `1` for periodic and `0` for non-periodic. Example: `periodic_dimension = 1, 1` makes the domain doubly periodic.
+</ParamField>
+
+<Note>
+  When non-periodic boundaries are used (`periodic_dimension = 0, 0`), you must register `muParserRobinBcCoefs` objects via `registerPhysicalBoundaryConditions`. See [Boundary conditions](/configuration/boundary-conditions) for details.
+</Note>
+
+---
+
+## GriddingAlgorithm block
+
+Controls the AMR patch hierarchy structure.
+
+<ParamField path="GriddingAlgorithm.max_levels" type="integer" required>
+  Total number of levels in the hierarchy, including the coarsest level. Level 0 is the coarsest; level `max_levels - 1` is the finest.
+</ParamField>
+
+<ParamField path="GriddingAlgorithm.ratio_to_coarser" type="object" required>
+  Refinement ratio from each level to the level below it. Each entry is named `level_N` and takes a comma-separated pair, e.g. `level_1 = 2, 2` for 2× refinement in both directions.
+</ParamField>
+
+<ParamField path="GriddingAlgorithm.efficiency_tolerance" type="number" default="0.70">
+  Minimum fraction of tagged cells that must fall inside a newly created patch. Lower values allow looser patches that cover more untagged cells.
+</ParamField>
+
+<ParamField path="GriddingAlgorithm.combine_efficiency" type="number" default="0.85">
+  Controls patch merging: if the total volume of smaller boxes is less than this fraction of the merged box volume, the boxes are combined.
+</ParamField>
+
+<ParamField path="GriddingAlgorithm.largest_patch_size" type="object">
+  Maximum patch dimensions at each level, e.g. `level_0 = 512, 512`. Finer levels inherit the level-0 value unless overridden.
+</ParamField>
+
+<ParamField path="GriddingAlgorithm.smallest_patch_size" type="object">
+  Minimum patch dimensions at each level, e.g. `level_0 = 4, 4`. Patches smaller than this are prevented from being created.
+</ParamField>
